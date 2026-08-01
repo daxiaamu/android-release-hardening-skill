@@ -32,6 +32,8 @@ Generate each sample from the final APK, sign with an attacker test key, record 
 15. Expand a business ELF `PT_LOAD`, move the section table, embed captured plaintext/keystream, and re-sign.
 16. Recompute a modified business SO's internal self-seal while leaving the outer shell unchanged.
 17. Patch only one device ABI while retaining pristine libraries for the other shipped ABIs.
+18. Dump the runtime-loaded business DEX, restore the original Application/launcher, remove every shell class/provider/asset/SO/metadata entry, and rebuild an attacker-signed standalone APK.
+19. In the peeled APK, patch business signer/self-seal gates while leaving the real challenge/proof computation intact; verify that newly generated challenges cannot match the official build.
 
 After single mutations, create evidence-driven combinations of two to four controls. Do not enumerate arbitrary combinations without a demonstrated dependency graph.
 
@@ -48,6 +50,8 @@ On an explicitly authorized root test device, test:
 - Capability replay across challenge, phase, process, or build.
 - Plaintext/payload extraction after official startup followed by replay in an attacker-signed build.
 - Business SO replacement while shell SOs and shell DEX remain unchanged.
+- Runtime DEX extraction followed by complete shell deletion and inner-APK reconstruction.
+- Removal of the outer capability producer while replaying or locally emulating its last observed output.
 
 Keep hooks narrow and reproducible. Save scripts and exact framework/module versions.
 

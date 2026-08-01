@@ -40,6 +40,8 @@ Do not silently substitute a demo application for artifact-shell mode. Do not tr
 - Bind the shell `classes.dex` digest into the native verification graph and verify it directly from the installed APK.
 - Enumerate every original business SO before injecting shell libraries. Embed an obscured entry/digest manifest and remeasure each original SO directly from the installed APK during startup and watchdog checks.
 - Treat long-lived decrypted payloads as a regression risk. Prefer challenge/phase-scoped material, wipe native buffers immediately after use, and use process/epoch-bound capabilities rather than stable authorization booleans.
+- Treat shell removal as a first-class attack. The extracted business DEX plus original Manifest/business SOs must not remain a runnable standalone APK. Make protected output depend on an outer-owned share at multiple computation points; do not use the shell only as a startup gate or disposable file verifier.
+- Test the exact peeled reconstruction: recovered business DEX, restored original Application/launcher, original resources, patched business SOs, and attacker signing. Reject a release if fresh protected outputs still work after the shell classes, assets, metadata, providers, and SOs are deleted.
 - Sign to a temporary artifact, verify signature and structure, then atomically publish the output so a failed run cannot replace a known-good release.
 
 ## Bundled DXProtect tool

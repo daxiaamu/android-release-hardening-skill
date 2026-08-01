@@ -77,4 +77,12 @@ When the input is a final APK rather than source, use a separate shell toolchain
 
 Do not keep a complete decrypted business payload or key schedule in a stable native global longer than required. Decrypt per operation where compatible, wipe transient buffers after class/view creation, and bind process randomness plus lifecycle epoch into capabilities. These measures narrow extraction windows but do not make runtime code unavailable to a root attacker.
 
+### Anti-peel binding
+
+Do not ship a shell whose recovered payload is equivalent to the original standalone release. A root attacker can dump the loaded DEX, restore the original Manifest, delete every shell component, and thereby remove all outer verification owners.
+
+Transform the protected business artifact so critical outputs require material from both layers. Split a per-build computation share between the shell native graph and business engine; consume it inside proof/content derivation at several dominator points rather than converting it to one reusable success boolean. Keep original Application/launcher restoration metadata authenticated and non-authoritative outside the shell. The release gate must rebuild a peeled APK from runtime-recovered DEX plus original resources/SOs and prove that fresh challenges fail closed.
+
+This binding raises the work required to remove the shell but remains extractable or emulatable under sustained root control. Server-issued freshness is still the stronger boundary where available.
+
 Treat custom AppComponentFactory, split APK sets, sharedUserId, preview minSdk and unknown ABI as explicit preflight decisions. A shell that emits an APK it cannot plausibly start has failed even if its encryption is strong.
