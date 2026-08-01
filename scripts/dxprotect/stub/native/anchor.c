@@ -6,6 +6,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include "generated_key.h"
+#include "generated_anchor_secret.h"
 
 __attribute__((used,section(".dxaseal"))) static const uint8_t DXA_SELF_SEAL[48]={DXP_ANCHOR_SELF_MARKER_BYTES};
 __attribute__((used,section(".dxapeer"))) static const uint8_t DXA_PEER_SEAL[48]={DXP_ANCHOR_PEER_MARKER_BYTES};
@@ -36,18 +37,40 @@ static void sf(sha256_ctx*c,uint8_t o[32]){uint32_t i=c->len;int j;c->data[i++]=
 static int eq(const uint8_t*a,const uint8_t*b){uint8_t x=0;int i;for(i=0;i<32;i++)x|=a[i]^b[i];return x==0;}
 static int ra(int fd,uint64_t o,void*v,size_t n){uint8_t*p=v;size_t d=0;while(d<n){ssize_t r=pread(fd,p+d,n-d,(off_t)(o+d));if(r<=0)return 0;d+=(size_t)r;}return 1;}
 static int hash_sealed(const char*path,const uint8_t*m1,const uint8_t*m2,uint8_t out[32]){int fd=-1,ok=0;struct stat st;uint8_t*b=0;size_t i,p1=(size_t)-1,p2=(size_t)-1;sha256_ctx c;if(!path||(fd=open(path,O_RDONLY|O_CLOEXEC))<0||fstat(fd,&st)||st.st_size<96||st.st_size>67108864)goto done;b=malloc((size_t)st.st_size);if(!b||!ra(fd,0,b,(size_t)st.st_size))goto done;for(i=0;i+48<=(size_t)st.st_size;i++){if(!memcmp(b+i,m1,16)){if(p1!=(size_t)-1)goto done;p1=i;}if(!memcmp(b+i,m2,16)){if(p2!=(size_t)-1)goto done;p2=i;}}if(p1==(size_t)-1||p2==(size_t)-1)goto done;memset(b+p1+16,0,32);memset(b+p2+16,0,32);si(&c);su(&c,b,(size_t)st.st_size);sf(&c,out);ok=1;done:if(b){memset(b,0,(size_t)st.st_size);free(b);}if(fd>=0)close(fd);return ok;}
-static void hm(const uint8_t*d,size_t n,uint8_t o[32]){uint8_t ip[64],op[64],in[32];int i;sha256_ctx c;for(i=0;i<64;i++){uint8_t k=i<32?DXP_ANCHOR_KEY[i]:0;ip[i]=k^0x36;op[i]=k^0x5c;}si(&c);su(&c,ip,64);su(&c,d,n);sf(&c,in);si(&c);su(&c,op,64);su(&c,in,32);sf(&c,o);memset(in,0,32);}
+static void hm_key(const uint8_t key[32],const uint8_t*d,size_t n,uint8_t o[32]){uint8_t ip[64],op[64],in[32];int i;sha256_ctx c;for(i=0;i<64;i++){uint8_t k=i<32?key[i]:0;ip[i]=k^0x36;op[i]=k^0x5c;}si(&c);su(&c,ip,64);su(&c,d,n);sf(&c,in);si(&c);su(&c,op,64);su(&c,in,32);sf(&c,o);memset(ip,0,64);memset(op,0,64);memset(in,0,32);}
+static void hm(const uint8_t*d,size_t n,uint8_t o[32]){hm_key(DXP_ANCHOR_KEY,d,n,o);}
 
 static jbyteArray native_attest(JNIEnv*e,jclass t,jbyteArray signer,jstring engine,jstring anchor){(void)t;if(!signer||!engine||!anchor||(*e)->GetArrayLength(e,signer)!=32)return 0;uint8_t s[32],ed[32],ad[32],msg[52],tag[32];(*e)->GetByteArrayRegion(e,signer,0,32,(jbyte*)s);if(!eq(s,DXP_CERT_SHA256))return 0;const char*ep=(*e)->GetStringUTFChars(e,engine,0),*ap=(*e)->GetStringUTFChars(e,anchor,0);int ok=ep&&ap&&hash_sealed(ep,DXE_SELF_MARKER,DXE_PEER_MARKER,ed)&&eq(ed,DXA_PEER_SEAL+16)&&hash_sealed(ap,DXA_SELF_SEAL,DXA_PEER_SEAL,ad)&&eq(ad,DXA_SELF_SEAL+16);if(ep)(*e)->ReleaseStringUTFChars(e,engine,ep);if(ap)(*e)->ReleaseStringUTFChars(e,anchor,ap);if(!ok)return 0;int fd=open("/dev/urandom",O_RDONLY|O_CLOEXEC);if(fd<0||read(fd,msg+32,16)!=16){if(fd>=0)close(fd);return 0;}close(fd);memcpy(msg,s,32);uint32_t pid=(uint32_t)getpid();msg[48]=pid>>24;msg[49]=pid>>16;msg[50]=pid>>8;msg[51]=pid;hm(msg,52,tag);jbyteArray out=(*e)->NewByteArray(e,48);uint8_t cap[48];memcpy(cap,msg+32,16);memcpy(cap+16,tag,32);(*e)->SetByteArrayRegion(e,out,0,48,(jbyte*)cap);memset(cap,0,48);memset(msg,0,52);return out;}
 
+static jbyteArray native_fragment(JNIEnv*e,jclass t,jbyteArray signer,jstring engine,jstring anchor,jstring challenge,jint phase,jint domain){
+    (void)t;if(!runtime_clean()||!signer||!engine||!anchor||!challenge||phase<0||phase>3||domain<0||domain>7||(*e)->GetArrayLength(e,signer)!=32)return 0;
+    uint8_t s[32],ed[32],ad[32],key[32],msg[420],out[32],round[70];size_t p=0,n;int i,r;
+    (*e)->GetByteArrayRegion(e,signer,0,32,(jbyte*)s);if(!eq(s,DXP_CERT_SHA256))return 0;
+    const char*ep=(*e)->GetStringUTFChars(e,engine,0),*ap=(*e)->GetStringUTFChars(e,anchor,0),*raw=(*e)->GetStringUTFChars(e,challenge,0);
+    int ok=ep&&ap&&raw&&hash_sealed(ep,DXE_SELF_MARKER,DXE_PEER_MARKER,ed)&&eq(ed,DXA_PEER_SEAL+16)&&hash_sealed(ap,DXA_SELF_SEAL,DXA_PEER_SEAL,ad)&&eq(ad,DXA_SELF_SEAL+16);
+    n=raw?strlen(raw):0;if(n==0||n>256)ok=0;
+    if(ok){
+        for(i=0;i<32;i++)key[i]=(uint8_t)(DXP_BIND_B[i]^DXP_ANCHOR_KEY[(i*11)&31]^ed[(i+7)&31]^ad[(i+23)&31]);
+        msg[p++]=(uint8_t)phase;msg[p++]=(uint8_t)domain;msg[p++]=(uint8_t)(n>>8);msg[p++]=(uint8_t)n;
+        memcpy(msg+p,raw,n);p+=n;memcpy(msg+p,s,32);p+=32;memcpy(msg+p,ed,32);p+=32;memcpy(msg+p,ad,32);p+=32;
+        hm_key(key,msg,p,out);
+        for(r=0;r<2;r++){memcpy(round,out,32);memcpy(round+32,ed,16);memcpy(round+48,ad+16,16);round[64]=(uint8_t)phase;round[65]=(uint8_t)domain;round[66]=(uint8_t)r;round[67]=(uint8_t)n;round[68]=key[(r+9)&31];round[69]=key[(r+21)&31];hm_key(key,round,70,out);}
+    }
+    if(ep)(*e)->ReleaseStringUTFChars(e,engine,ep);if(ap)(*e)->ReleaseStringUTFChars(e,anchor,ap);if(raw)(*e)->ReleaseStringUTFChars(e,challenge,raw);
+    jbyteArray result=ok?(*e)->NewByteArray(e,32):0;if(result)(*e)->SetByteArrayRegion(e,result,0,32,(jbyte*)out);
+    memset(s,0,32);memset(ed,0,32);memset(ad,0,32);memset(key,0,32);memset(msg,0,sizeof(msg));memset(out,0,32);memset(round,0,sizeof(round));return result;
+}
+
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM*vm,void*reserved){
     (void)reserved;if(!runtime_clean())return JNI_ERR;JNIEnv*e=0;if((*vm)->GetEnv(vm,(void**)&e,JNI_VERSION_1_6)!=JNI_OK)return JNI_ERR;
-    char cls[DXP_ANCHOR_CLASS_LEN+1],name[DXP_ATTEST_NAME_LEN+1],sig[DXP_ATTEST_SIG_LEN+1];
+    char cls[DXP_ANCHOR_CLASS_LEN+1],name[DXP_ATTEST_NAME_LEN+1],sig[DXP_ATTEST_SIG_LEN+1],fname[DXP_FRAGMENT_NAME_LEN+1],fsig[DXP_FRAGMENT_SIG_LEN+1];
     reveal(cls,DXP_ANCHOR_CLASS_X,DXP_ANCHOR_CLASS_LEN,DXP_ANCHOR_CLASS_MASK);
     reveal(name,DXP_ATTEST_NAME_X,DXP_ATTEST_NAME_LEN,DXP_ATTEST_NAME_MASK);
     reveal(sig,DXP_ATTEST_SIG_X,DXP_ATTEST_SIG_LEN,DXP_ATTEST_SIG_MASK);
+    reveal(fname,DXP_FRAGMENT_NAME_X,DXP_FRAGMENT_NAME_LEN,DXP_FRAGMENT_NAME_MASK);
+    reveal(fsig,DXP_FRAGMENT_SIG_X,DXP_FRAGMENT_SIG_LEN,DXP_FRAGMENT_SIG_MASK);
     jclass c=(*e)->FindClass(e,cls);if(!c)return JNI_ERR;
-    JNINativeMethod m={name,sig,(void*)native_attest};int ok=(*e)->RegisterNatives(e,c,&m,1)==0;
-    memset(cls,0,sizeof(cls));memset(name,0,sizeof(name));memset(sig,0,sizeof(sig));
+    JNINativeMethod m[2]={{name,sig,(void*)native_attest},{fname,fsig,(void*)native_fragment}};int ok=(*e)->RegisterNatives(e,c,m,2)==0;
+    memset(cls,0,sizeof(cls));memset(name,0,sizeof(name));memset(sig,0,sizeof(sig));memset(fname,0,sizeof(fname));memset(fsig,0,sizeof(fsig));
     return ok?JNI_VERSION_1_6:JNI_ERR;
 }

@@ -41,6 +41,9 @@ Do not silently substitute a demo application for artifact-shell mode. Do not tr
 - Enumerate every original business SO before injecting shell libraries. Embed an obscured entry/digest manifest and remeasure each original SO directly from the installed APK during startup and watchdog checks.
 - Treat long-lived decrypted payloads as a regression risk. Prefer challenge/phase-scoped material, wipe native buffers immediately after use, and use process/epoch-bound capabilities rather than stable authorization booleans.
 - Treat shell removal as a first-class attack. The extracted business DEX plus original Manifest/business SOs must not remain a runnable standalone APK. Make protected output depend on an outer-owned share at multiple computation points; do not use the shell only as a startup gate or disposable file verifier.
+- Split anti-peel share material across independently built shell libraries. Have one library verify the cross-sealed graph and emit a challenge/phase/domain fragment, then require the second library to combine that fragment with its own secret and the measured business graph. Do not place both share secrets in one generated header or one SO.
+- Mix multiple fresh outer shares into initial state, iterative business computation, final output, rendered-state seal, and watchdog state. A peeled package with a fixed/null facade must produce neither the official proof nor an accepted protected state.
+- Use per-build random binary self-seal markers. Reject descriptive marker strings such as `ENGINEHASH`, which become stable reverse-engineering anchors.
 - Test the exact peeled reconstruction: recovered business DEX, restored original Application/launcher, original resources, patched business SOs, and attacker signing. Reject a release if fresh protected outputs still work after the shell classes, assets, metadata, providers, and SOs are deleted.
 - Sign to a temporary artifact, verify signature and structure, then atomically publish the output so a failed run cannot replace a known-good release.
 
@@ -56,6 +59,7 @@ Do not edit the target application's source in artifact-shell mode. Do not use t
 - Cross-check signer identity through at least two independently implemented paths. Prefer PackageManager/SigningInfo plus direct parsing of the installed base APK; add v1/JAR or raw Binder checks only when compatible.
 - Validate the installed artifact, loaded native mappings, and critical UI/business state continuously at randomized or build-specific intervals.
 - Keep trust anchors split across independently built components. Seal critical native files and verify the seal before using decrypted payloads.
+- Verify the packaged output actually preserves secret separation: the engine SO contains only its share and the anchor SO contains only the complementary share for every ABI.
 - Generate protected strings/layout parameters only after capability validation. Verify the complete rendered state, not one title string.
 - Implement at least two independent failure surfaces plus a third repair/verification owner. Failure UI must be non-cancelable, reject Back/outside touches, and expose only Exit.
 - Vary build identifiers, operation names, salts, layout topology, and non-secret VM parameters per release. Keep protocol compatibility explicit.

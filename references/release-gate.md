@@ -34,6 +34,10 @@ Generate each sample from the final APK, sign with an attacker test key, record 
 17. Patch only one device ABI while retaining pristine libraries for the other shipped ABIs.
 18. Dump the runtime-loaded business DEX, restore the original Application/launcher, remove every shell class/provider/asset/SO/metadata entry, and rebuild an attacker-signed standalone APK.
 19. In the peeled APK, patch business signer/self-seal gates while leaving the real challenge/proof computation intact; verify that newly generated challenges cannot match the official build.
+20. Add a peeled-package facade that returns fixed, zero, random, or replayed outer shares; require fresh proof/scene/view-seal mismatch and the prescribed failure UI where the business layer can authenticate the share.
+21. Patch the outer-share Java facade while leaving both shell SOs unchanged; require shell DEX measurement or the native graph to reject it.
+22. Extract only one shell SO and attempt to emulate the share protocol; verify the complementary fragment is required for every challenge/domain.
+23. Search all packaged ELFs for descriptive self-seal markers and verify per-build marker diversification across two consecutive builds.
 
 After single mutations, create evidence-driven combinations of two to four controls. Do not enumerate arbitrary combinations without a demonstrated dependency graph.
 

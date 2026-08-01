@@ -263,6 +263,34 @@ public final class StubApplication extends Application {
         } catch (Throwable ignored) { return false; }
     }
 
+    public static synchronized byte[] __DXP_BUSINESS_SHARE_METHOD__(String challenge, int phase, int domain) {
+        StubApplication app = instance;
+        if (!integrityReady || app == null || challenge == null || challenge.length() == 0 ||
+                challenge.length() > 256 || phase < 0 || phase > 3 || domain < 0 || domain > 7) return null;
+        try {
+            byte[] fresh = AnchorBridge.__DXP_ATTEST_METHOD__(app.signerSha256, app.enginePath, app.anchorPath);
+            if (fresh == null || fresh.length != 48) return null;
+            byte[] fragment = AnchorBridge.__DXP_FRAGMENT_METHOD__(app.signerSha256, app.enginePath,
+                    app.anchorPath, challenge, phase, domain);
+            if (fragment == null || fragment.length != 32) {
+                Arrays.fill(fresh, (byte) 0);
+                return null;
+            }
+            byte[] share = NativeBridge.__DXP_SHARE_METHOD__(app.signerSha256, app.apkPath, app.enginePath,
+                    app.anchorPath, fresh, fragment, challenge, phase, domain);
+            Arrays.fill(fragment, (byte) 0);
+            if (share == null || share.length != 32) {
+                Arrays.fill(fresh, (byte) 0);
+                return null;
+            }
+            if (app.capability != null) Arrays.fill(app.capability, (byte) 0);
+            app.capability = fresh;
+            return share;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
     static void revokeIntegrity() { integrityReady = false; }
 
     static String originalLauncher(Context context) throws Exception {

@@ -245,9 +245,13 @@ def compile_stub(work: Path, key: bytes, cert_sha256: bytes, profile: dict, abis
     key_text = ",".join(f"0x{x:02X}" for x in key)
     cert_text = ",".join(f"0x{x:02X}" for x in cert_sha256)
     anchor_key = secrets.token_bytes(32)
+    bind_a = secrets.token_bytes(32)
+    bind_b = secrets.token_bytes(32)
     markers = [secrets.token_bytes(16) for _ in range(4)]
     marker_texts = [",".join(f"0x{x:02X}" for x in marker) for marker in markers]
     anchor_key_text = ",".join(f"0x{x:02X}" for x in anchor_key)
+    bind_a_text = ",".join(f"0x{x:02X}" for x in bind_a)
+    bind_b_text = ",".join(f"0x{x:02X}" for x in bind_b)
     def encoded_native_string(symbol: str, value: str) -> str:
         mask = secrets.randbelow(255) + 1
         encoded = ",".join(f"0x{(byte ^ mask):02X}" for byte in value.encode("ascii"))
@@ -258,10 +262,14 @@ def compile_stub(work: Path, key: bytes, cert_sha256: bytes, profile: dict, abis
         encoded_native_string("DXP_ANCHOR_CLASS", profile["java_package"].replace(".", "/") + "/" + profile["anchor_bridge_class"]),
         encoded_native_string("DXP_DECRYPT_NAME", profile["decrypt_method"]),
         encoded_native_string("DXP_RECHECK_NAME", profile["recheck_method"]),
+        encoded_native_string("DXP_SHARE_NAME", profile["share_method"]),
         encoded_native_string("DXP_ATTEST_NAME", profile["attest_method"]),
+        encoded_native_string("DXP_FRAGMENT_NAME", profile["fragment_method"]),
         encoded_native_string("DXP_DECRYPT_SIG", "([B[BLjava/lang/String;Ljava/lang/String;Ljava/lang/String;[B)[B"),
         encoded_native_string("DXP_RECHECK_SIG", "([BLjava/lang/String;Ljava/lang/String;Ljava/lang/String;[B)Z"),
+        encoded_native_string("DXP_SHARE_SIG", "([BLjava/lang/String;Ljava/lang/String;Ljava/lang/String;[B[BLjava/lang/String;II)[B"),
         encoded_native_string("DXP_ATTEST_SIG", "([BLjava/lang/String;Ljava/lang/String;)[B"),
+        encoded_native_string("DXP_FRAGMENT_SIG", "([BLjava/lang/String;Ljava/lang/String;Ljava/lang/String;II)[B"),
         encoded_native_string("DXP_RT_STATUS_PATH", "/proc/self/status"),
         encoded_native_string("DXP_RT_TRACER_KEY", "TracerPid:"),
         encoded_native_string("DXP_RT_MAPS_PATH", "/proc/self/maps"),
@@ -303,11 +311,15 @@ def compile_stub(work: Path, key: bytes, cert_sha256: bytes, profile: dict, abis
         f"#include <stdint.h>\nstatic const uint8_t DXP_KEY[32]={{{key_text}}};\n"
         f"static const uint8_t DXP_CERT_SHA256[32]={{{cert_text}}};\n"
         f"static const uint8_t DXP_ANCHOR_KEY[32]={{{anchor_key_text}}};\n"
+        f"static const volatile uint8_t DXP_BIND_A[32]={{{bind_a_text}}};\n"
         f"#define DXP_RUNTIME_GUARD {profile['runtime_guard_level']}\n"
         f"#define DXP_ENGINE_SELF_MARKER_BYTES {marker_texts[0]}\n"
         f"#define DXP_ENGINE_PEER_MARKER_BYTES {marker_texts[1]}\n"
         f"#define DXP_ANCHOR_SELF_MARKER_BYTES {marker_texts[2]}\n"
         f"#define DXP_ANCHOR_PEER_MARKER_BYTES {marker_texts[3]}\n" + native_strings + business_native_header,
+        encoding="ascii")
+    (gen / "generated_anchor_secret.h").write_text(
+        f"#include <stdint.h>\nstatic const volatile uint8_t DXP_BIND_B[32]={{{bind_b_text}}};\n",
         encoding="ascii")
     shutil.copytree(ROOT / "stub" / "src", source_root)
     profile_java = source_root / "com" / "daxiaamu" / "protector" / "BuildProfile.java"
@@ -326,6 +338,10 @@ def compile_stub(work: Path, key: bytes, cert_sha256: bytes, profile: dict, abis
         source_text = source_text.replace("__DXP_DECRYPT_METHOD__", profile["decrypt_method"])
         source_text = source_text.replace("__DXP_RECHECK_METHOD__", profile["recheck_method"])
         source_text = source_text.replace("__DXP_ATTEST_METHOD__", profile["attest_method"])
+        source_text = source_text.replace("__DXP_FRAGMENT_METHOD__", profile["fragment_method"])
+        source_text = source_text.replace("__DXP_SHARE_METHOD__", profile["share_method"])
+        source_text = source_text.replace("__DXP_BUSINESS_SHARE_METHOD__", profile["business_share_method"])
+        source_text = source_text.replace("__DXP_STUB_FQCN__", profile["stub_fqcn"])
         for old, new in class_map.items(): source_text = source_text.replace(old, new)
         source.write_text(source_text, encoding="utf-8")
         if source.stem in class_map: source.rename(source.with_name(class_map[source.stem] + ".java"))
@@ -341,7 +357,16 @@ def compile_stub(work: Path, key: bytes, cert_sha256: bytes, profile: dict, abis
     if D8_JAVA_HOME:
         d8_env["JAVA_HOME"] = str(D8_JAVA_HOME); d8_env["PATH"] = str(D8_JAVA_HOME / "bin") + os.pathsep + d8_env.get("PATH", "")
     d8 = BT / ("d8.bat" if os.name == "nt" else "d8")
-    run([d8, "--release", "--min-api", str(min_api), "--lib", ANDROID_JAR, "--output", dex, jar], env=d8_env)
+    try:
+        run([d8, "--release", "--min-api", str(min_api), "--lib", ANDROID_JAR, "--output", dex, jar], env=d8_env)
+    except RuntimeError:
+        # Build-tools 30.0.3 D8 can crash internally on otherwise valid Java 8
+        # class graphs. The colocated legacy dx compiler is a deterministic
+        # compatibility fallback for the small bootstrap DEX.
+        dx = BT / ("dx.bat" if os.name == "nt" else "dx")
+        if not dx.exists():
+            raise
+        run([dx, "--dex", f"--output={dex / 'classes.dex'}", jar], env=d8_env)
     stub_digest = hashlib.sha256((dex / "classes.dex").read_bytes()).digest()
     stub_digest_text = ",".join(f"0x{x:02X}" for x in stub_digest)
     with (gen / "generated_key.h").open("a", encoding="ascii") as header:
@@ -429,7 +454,7 @@ def main():
                 "entry": native_file.relative_to(decoded).as_posix(),
                 "sha256": hashlib.sha256(native_file.read_bytes()).hexdigest().upper()
             })
-        build_id = "DXP6-" + secrets.token_hex(4).upper(); key = secrets.token_bytes(32)
+        build_id = "DXP7-" + secrets.token_hex(4).upper(); key = secrets.token_bytes(32)
         token = secrets.token_hex(6)
         java_package = "x" + secrets.token_hex(4) + ".y" + secrets.token_hex(4)
         def cname(prefix): return prefix + secrets.token_hex(4)
@@ -443,7 +468,10 @@ def main():
                    "bootstrap_authority": "p" + secrets.token_hex(6),
                    "decrypt_method": "d" + secrets.token_hex(5),
                    "recheck_method": "r" + secrets.token_hex(5),
-                   "attest_method": "t" + secrets.token_hex(5)}
+                   "attest_method": "t" + secrets.token_hex(5),
+                   "share_method": "h" + secrets.token_hex(5),
+                   "fragment_method": "f" + secrets.token_hex(5),
+                   "business_share_method": "b" + secrets.token_hex(5)}
         profile["runtime_guard"] = args.runtime_guard
         profile["runtime_guard_level"] = {"off": 0, "tracer": 1, "strict": 2}[args.runtime_guard]
         profile["stub_fqcn"] = java_package + "." + profile["stub_class"]
@@ -476,7 +504,7 @@ def main():
         shutil.copy2(signed, publish_temp)
         os.replace(publish_temp, args.output)
         report = {
-            "schema": 2, "build_id": build_id, "input": str(args.input.resolve()),
+            "schema": 3, "build_id": build_id, "input": str(args.input.resolve()),
             "input_sha256": hashlib.sha256(args.input.read_bytes()).hexdigest().upper(),
             "output": str(args.output.resolve()),
             "output_sha256": hashlib.sha256(args.output.read_bytes()).hexdigest().upper(),
@@ -490,6 +518,7 @@ def main():
             "payload_format": "DXPROT01/HMAC-SHA256/SHA256-CTR", "diversification": profile,
             "native_self_seal": "two-library SHA-256 cross-seal/digest-slots-zeroed + original business SO APK digest manifest",
             "capability": "48-byte process-bound nonce + HMAC-SHA256",
+            "anti_peel": "challenge/phase/domain-bound shares split across anchor/engine SOs; fixed lookup, diversified implementation",
             "jni_binding": "per-build method names + XOR-obscured RegisterNatives/JNI_OnLoad only",
             "stub_dex_sha256": stub_dex_sha256
         }

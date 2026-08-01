@@ -146,19 +146,52 @@ static jbyteArray native_decrypt(JNIEnv*env,jclass type,jbyteArray input,jbyteAr
 }
 static jboolean native_recheck(JNIEnv*env,jclass type,jbyteArray signer,jstring apk_path,jstring native_path,jstring anchor_path,jbyteArray capability){(void)type;return verify_graph(env,signer,apk_path,native_path,anchor_path,capability)?JNI_TRUE:JNI_FALSE;}
 
+static jbyteArray native_share(JNIEnv*env,jclass type,jbyteArray signer,jstring apk_path,jstring native_path,
+                               jstring anchor_path,jbyteArray capability,jbyteArray anchor_fragment,jstring challenge,jint phase,jint domain){
+    (void)type;if(!anchor_fragment||(*env)->GetArrayLength(env,anchor_fragment)!=32||!challenge||phase<0||phase>3||domain<0||domain>7||
+        !verify_graph(env,signer,apk_path,native_path,anchor_path,capability))return 0;
+    const char*raw=(*env)->GetStringUTFChars(env,challenge,0);if(!raw)return 0;size_t n=strlen(raw);
+    if(n==0||n>256){(*env)->ReleaseStringUTFChars(env,challenge,raw);return 0;}
+    uint8_t fragment[32],key[32],msg[512],out[32],round[104],manifest[32];size_t p=0;int i,r;sha256_ctx manifest_hash;
+    (*env)->GetByteArrayRegion(env,anchor_fragment,0,32,(jbyte*)fragment);
+    for(i=0;i<32;i++)key[i]=(uint8_t)(DXP_BIND_A[i]^fragment[31-i]^DXP_KEY[(i*7)&31]^
+        DXP_SELF_SEAL[16+((i+5)&31)]^DXP_PEER_SEAL[16+((i+19)&31)]);
+    msg[p++]=(uint8_t)phase;msg[p++]=(uint8_t)domain;msg[p++]=(uint8_t)(n>>8);msg[p++]=(uint8_t)n;
+    memcpy(msg+p,raw,n);p+=n;memcpy(msg+p,DXP_CERT_SHA256,32);p+=32;
+    memcpy(msg+p,DXP_STUB_DEX_SHA256,32);p+=32;
+    init(&manifest_hash);
+#if DXP_BUSINESS_SO_COUNT > 0
+    for(i=0;i<DXP_BUSINESS_SO_COUNT;i++)update(&manifest_hash,DXP_BUSINESS_SO_SHA256[i],32);
+#else
+    update(&manifest_hash,DXP_STUB_DEX_SHA256,32);
+#endif
+    final(&manifest_hash,manifest);memcpy(msg+p,manifest,32);p+=32;memcpy(msg+p,fragment,32);p+=32;
+    hmac_key(key,msg,p,out);
+    for(r=0;r<3;r++){
+        memcpy(round,out,32);for(i=0;i<32;i++)round[32+i]=(uint8_t)(key[(i+r*5)&31]^fragment[(i+r*9)&31]);
+        memcpy(round+64,manifest,32);round[96]=(uint8_t)phase;round[97]=(uint8_t)domain;round[98]=(uint8_t)r;round[99]=(uint8_t)n;
+        memcpy(round+100,DXP_STUB_DEX_SHA256+r*4,4);hmac_key(key,round,104,out);
+    }
+    (*env)->ReleaseStringUTFChars(env,challenge,raw);jbyteArray result=(*env)->NewByteArray(env,32);
+    if(result)(*env)->SetByteArrayRegion(env,result,0,32,(jbyte*)out);
+    memset(fragment,0,sizeof(fragment));memset(key,0,sizeof(key));memset(msg,0,sizeof(msg));memset(out,0,sizeof(out));memset(round,0,sizeof(round));memset(manifest,0,sizeof(manifest));return result;
+}
+
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM*vm,void*reserved){
     (void)reserved;JNIEnv*e=0;if((*vm)->GetEnv(vm,(void**)&e,JNI_VERSION_1_6)!=JNI_OK)return JNI_ERR;
-    char cls[DXP_ENGINE_CLASS_LEN+1],dn[DXP_DECRYPT_NAME_LEN+1],rn[DXP_RECHECK_NAME_LEN+1];
-    char ds[DXP_DECRYPT_SIG_LEN+1],rs[DXP_RECHECK_SIG_LEN+1];
+    char cls[DXP_ENGINE_CLASS_LEN+1],dn[DXP_DECRYPT_NAME_LEN+1],rn[DXP_RECHECK_NAME_LEN+1],sn[DXP_SHARE_NAME_LEN+1];
+    char ds[DXP_DECRYPT_SIG_LEN+1],rs[DXP_RECHECK_SIG_LEN+1],ss[DXP_SHARE_SIG_LEN+1];
     reveal(cls,DXP_ENGINE_CLASS_X,DXP_ENGINE_CLASS_LEN,DXP_ENGINE_CLASS_MASK);
     reveal(dn,DXP_DECRYPT_NAME_X,DXP_DECRYPT_NAME_LEN,DXP_DECRYPT_NAME_MASK);
     reveal(rn,DXP_RECHECK_NAME_X,DXP_RECHECK_NAME_LEN,DXP_RECHECK_NAME_MASK);
+    reveal(sn,DXP_SHARE_NAME_X,DXP_SHARE_NAME_LEN,DXP_SHARE_NAME_MASK);
     reveal(ds,DXP_DECRYPT_SIG_X,DXP_DECRYPT_SIG_LEN,DXP_DECRYPT_SIG_MASK);
     reveal(rs,DXP_RECHECK_SIG_X,DXP_RECHECK_SIG_LEN,DXP_RECHECK_SIG_MASK);
+    reveal(ss,DXP_SHARE_SIG_X,DXP_SHARE_SIG_LEN,DXP_SHARE_SIG_MASK);
     jclass c=(*e)->FindClass(e,cls);if(!c)return JNI_ERR;
-    JNINativeMethod m[2]={{dn,ds,(void*)native_decrypt},{rn,rs,(void*)native_recheck}};
-    int ok=(*e)->RegisterNatives(e,c,m,2)==0;
-    memset(cls,0,sizeof(cls));memset(dn,0,sizeof(dn));memset(rn,0,sizeof(rn));
-    memset(ds,0,sizeof(ds));memset(rs,0,sizeof(rs));
+    JNINativeMethod m[3]={{dn,ds,(void*)native_decrypt},{rn,rs,(void*)native_recheck},{sn,ss,(void*)native_share}};
+    int ok=(*e)->RegisterNatives(e,c,m,3)==0;
+    memset(cls,0,sizeof(cls));memset(dn,0,sizeof(dn));memset(rn,0,sizeof(rn));memset(sn,0,sizeof(sn));
+    memset(ds,0,sizeof(ds));memset(rs,0,sizeof(rs));memset(ss,0,sizeof(ss));
     return ok?JNI_VERSION_1_6:JNI_ERR;
 }
