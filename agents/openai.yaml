@@ -1,0 +1,4 @@
+interface:
+  display_name: "Android Release Hardening"
+  short_description: "Android release signing and tamper hardening"
+  default_prompt: "Use $android-release-hardening to audit and harden the current Android project before release."
