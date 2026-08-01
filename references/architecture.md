@@ -61,3 +61,17 @@ Never delete user data, damage the device, block package management, or affect o
 ## Limits
 
 Root and arbitrary code modification give the attacker control over the local execution environment. These controls raise analysis/maintenance cost and detect tested mutation classes; they cannot create an absolute offline trust boundary. Put high-value authorization and mutable policy on a server when the product permits it.
+
+## Artifact-side reusable shell
+
+When the input is a final APK rather than source, use a separate shell toolchain instead of pretending to add source controls:
+
+1. Decode only enough to preserve raw DEX/resources/native libraries and inspect Manifest compatibility.
+2. Encrypt/authenticate every original `classes*.dex`; leave only the diversified stub DEX at the APK top level.
+3. Inject a randomized stub Application, launcher gateway, and highest-priority non-exported BootstrapProvider for original Application identity restoration.
+4. Compile independent Engine/Anchor libraries for exactly the target ABI set. Use per-build dynamic JNI registration and keep only `JNI_OnLoad` exported.
+5. Bind signer evidence, both SO cross-seals, process capability, runtime evidence, and the packaged stub DEX digest before decrypting payloads.
+6. Preserve the original `nativeLibraryDir` in all payload class loaders so NativeActivity and JNI applications remain functional.
+7. Rebuild, align, sign to a temporary APK, verify ZIP structure/signing schemes/certificate, then publish atomically.
+
+Treat custom AppComponentFactory, split APK sets, sharedUserId, preview minSdk and unknown ABI as explicit preflight decisions. A shell that emits an APK it cannot plausibly start has failed even if its encryption is strong.

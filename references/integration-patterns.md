@@ -55,3 +55,5 @@ Recheck after initial layout and periodically. Use tolerance for density-depende
 ## Compatibility
 
 Test at least the minimum API, a current API, 32/64-bit ABIs if shipped, OEM-skinned Android, split-install behavior, upgrades signed by the official lineage, and accessibility/font-scale changes. Make hardening observable in internal diagnostics without leaking trust anchors or bypass switches in release builds.
+
+For artifact-shell mode, separately test ordinary Activity, custom Application identity, startup providers, NativeActivity/JNI lookup, multi-DEX, each emitted ABI, cold/warm start, and upgrade install. The payload class loader must carry `ApplicationInfo.nativeLibraryDir`. If a framework component must load before the shell can install the payload loader (for example a custom AppComponentFactory), reject or explicitly downgrade support in preflight.

@@ -5,23 +5,46 @@ description: Harden Android applications before release with layered APK signer 
 
 # Android Release Hardening
 
-Apply defense in depth to the source project, then prove behavior on the final signed APK. Do not treat any single certificate check, obfuscator, or native library as sufficient.
+Choose one of two explicit integration modes, then prove behavior on the final signed APK:
+
+- **Source mode** modifies an Android/Gradle/NDK project with project-aware controls.
+- **Artifact-shell mode** takes a final standalone APK, runs the reusable DXProtect tool, and does not modify business source.
+
+Do not silently substitute a demo application for artifact-shell mode. Do not treat any single certificate check, obfuscator, or native library as sufficient.
 
 ## Workflow
 
-1. Establish inputs:
+1. Establish the requested mode and inputs:
    - Project root, application ID, release variant, supported ABI/API levels.
+   - For artifact-shell mode: standalone input APK, protected output APK, DXProtect config/tool root, and compatibility requirements.
    - Final signing certificate SHA-256; never copy keystores or passwords into the skill or reports.
    - Build command, output APK/AAB, dedicated test-device serial, and acceptance rules.
-2. Run `scripts/audit_android_project.py <project> --out <dir>` and inspect both JSON and Markdown results.
+2. In source mode, run `scripts/audit_android_project.py <project> --out <dir>` and inspect both JSON and Markdown results. In artifact-shell mode, run DXProtect preflight and inspect `compatibility_preflight` in the output report.
 3. Read `references/architecture.md`; select controls that fit the project rather than blindly copying every mechanism.
-4. Implement one layer at a time, keeping a reversible diff. Preserve application behavior before adding the next layer.
+4. Implement one layer at a time, keeping a reversible diff. In artifact-shell mode, leave business source untouched and change only the output artifact/tool configuration. Preserve application behavior before adding the next layer.
 5. Generate per-build non-secret diversification material with `scripts/generate_build_profile.py`. Feed it through generated source/build config; never use it as a substitute for cryptographic secrets.
-6. Build the release artifact with the project's official toolchain and signing configuration.
+6. Build the release artifact with the project's official toolchain and signing configuration. For artifact-shell mode, build the official APK first and then invoke `dxprotect.ps1 -Config <secure-config>`.
 7. Run `scripts/verify_apk.ps1` against the final APK. Require the expected certificate digest and required signing schemes.
 8. Build attack variants and run the matrix in `references/release-gate.md` on an explicitly selected device (`adb -s <serial>` only).
 9. Validate success at the authoritative UI/business-state surface. Save APK hashes, commands, UI hierarchy, current Activity, logcat, and result JSON.
 10. Report implemented controls, exact evidence, remaining bypass classes, and rollback paths. Never claim an offline client is unbreakable.
+
+## Artifact-shell requirements
+
+- Accept a standalone APK as input and emit a new protected APK plus a machine-readable report; never require or rewrite business source unless the user separately requests source mode.
+- Preserve original native libraries and ABI coverage. Ensure the in-memory/DexClassLoader native search path includes the original `nativeLibraryDir`.
+- Restore a custom original Application as the framework-visible identity before business providers/activities rely on it; validate this with a fixture that casts `getApplication()` to the original type.
+- Reject unsupported early-loading structures such as a custom `appComponentFactory` rather than emitting a likely-crashing APK.
+- Keep per-build Java classes, native methods, JNI registration protocol, SO names, asset paths, metadata keys, watchdog interval, payload keys, and failure identifiers diversified.
+- Inspect the final ELF symbol/string surface. Source-level XOR does not count if compiler constant folding recreates plaintext; verify the packaged SO files.
+- Bind the shell `classes.dex` digest into the native verification graph and verify it directly from the installed APK.
+- Sign to a temporary artifact, verify signature and structure, then atomically publish the output so a failed run cannot replace a known-good release.
+
+## Bundled DXProtect tool
+
+The reusable artifact shell is bundled under `scripts/dxprotect/`. Read `references/dxprotect-tool.md` before use. Copy `scripts/dxprotect/dxprotect.config.example.json` to a secure project-external location, fill in the target/release toolchain paths, set only the named password environment variables, and run `scripts/dxprotect/dxprotect.ps1 -Config <config>`.
+
+Do not edit the target application's source in artifact-shell mode. Do not use the bundled fixture/test keys for a user release. The scripts `mutate_dex_string.py` and `mutate_apk_dex_string.py` are only for authorized tamper-regression samples after a clean protected baseline exists.
 
 ## Required design rules
 
@@ -44,3 +67,4 @@ Prefer final-device behavior, captured runtime state, final APK contents/signatu
 - Read `references/architecture.md` for the code-level component blueprint and implementation choices.
 - Read `references/release-gate.md` before building attack samples or defining pass/fail criteria.
 - Read `references/integration-patterns.md` when adapting controls to Java/Kotlin, JNI, Gradle, APK, or AAB projects.
+- Read `references/dxprotect-tool.md` before artifact-shell mode; it documents the bundled APK input/output contract, configuration, compatibility boundary, and release evidence.
