@@ -1,4 +1,4 @@
-# DXProtect V5 通用 APK 加固壳
+# DXProtect V6 通用 APK 加固壳
 
 DXProtect 的输入是已经构建完成的单体 APK，输出是重新签名的加固 APK。它不要求目标项目源码，也不会修改业务源码；`fixture/` 仅用于本工具自身回归，不会被复制进目标 APP。
 
@@ -6,7 +6,7 @@ DXProtect 的输入是已经构建完成的单体 APK，输出是重新签名的
 
 `项目源码 → 官方 release APK → DXProtect → 正式签名的加固 APK + JSON 验收报告`
 
-## V5 加固结构
+## V6 加固结构
 
 - 原 `classes*.dex` 从 APK 顶层移除，分别加密并认证后放入每构建随机的 assets 路径；API 27+ 使用带原 APK native 搜索路径的 `InMemoryDexClassLoader`。
 - 壳由随机包名、随机类名、随机 JNI 方法名、随机 SO 名、随机元数据键和随机资产路径组成；同一输入连续构建不会产生固定补丁位置。
@@ -14,6 +14,7 @@ DXProtect 的输入是已经构建完成的单体 APK，输出是重新签名的
 - 签名通过 `PackageManager/SigningInfo` 与 native 直接解析已安装 APK v2/v3 Signing Block 两条路径交叉校验。
 - JNI 仅导出 `JNI_OnLoad`，通过 `RegisterNatives` 绑定每构建随机方法；类名、方法名、JNI 签名和运行时探针字符串以 volatile 异或数组保存，避免编译器常量折叠重新泄露明文。
 - native 从已安装 APK 中直接定位、解压并校验壳 `classes.dex`，将 Java 壳修改纳入交叉校验图。
+- 构建时枚举输入 APK 的全部原始业务 SO，为每个 `lib/<abi>/*.so` 生成 SHA-256 清单；entry 名以每构建随机异或数组保存。启动、解密与 watchdog 从已安装 APK 重新解压测量全部业务 SO，避免只修改内层 native 后重新计算内层 self-seal。
 - `strict` 运行时策略检查 `TracerPid` 和已知注入映射；`tracer` 仅检查调试附加，`off` 关闭该层。它是附加信号，不替代签名和文件校验。
 - 启动、Activity resume 和每构建随机 watchdog 周期都会刷新 capability；失败进入不可取消、禁止 Back/外部点击且只有“退出”按钮的失败界面。
 - 输出先在临时位置签名并完成结构/签名验收，再原子替换目标文件，失败不会留下半成品覆盖原输出。
@@ -62,9 +63,9 @@ python ./tools/protect.py `
 每次成功构建输出：
 
 - `*.apk`：最终对齐并签名的 APK；
-- `*.apk.dxprotect.json`：输入/输出 SHA-256、签名证书摘要、ABI、原 Application/Launcher、兼容性预检、随机化档案和壳 DEX摘要。
+- `*.apk.dxprotect.json`：输入/输出 SHA-256、签名证书摘要、ABI、原 Application/Launcher、兼容性预检、随机化档案、壳 DEX 摘要及业务 SO entry/digest 清单。
 
-发布前至少验证冷启动、升级安装、前后台切换、15 秒停留、自定义 Application、全部 ABI/JNI 功能，以及以下篡改结果：重新签名、壳 DEX 修改、payload 修改、任一 SO 修改、Manifest 入口修改。防御成功必须显示规定的不可取消失败弹窗；崩溃、黑屏或静默退出均属于兼容性失败。
+发布前至少验证冷启动、升级安装、前后台切换、15 秒停留、自定义 Application、全部 ABI/JNI 功能，以及以下篡改结果：重新签名、壳 DEX 修改、payload 修改、壳 SO 修改、每个原始业务 SO 独立修改、Manifest 入口修改。必须包含一个“只修改业务 SO 并重算其内部 self-seal”的样本。防御成功必须显示规定的不可取消失败弹窗；崩溃、黑屏或静默退出均属于兼容性失败。
 
 ## 安全边界
 

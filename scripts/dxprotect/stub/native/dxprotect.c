@@ -76,17 +76,16 @@ static int apk_cert_sha256(const char*path,uint8_t out[32]){
     ok=cert_from_signers(chosen,chosen_n,out);
 done: if(block)free(block);if(tail)free(tail);if(fd>=0)close(fd);return ok;
 }
-static int apk_stub_sha256(const char*path,uint8_t out[32]){
+static int apk_entry_sha256(const char*path,const char*wanted,size_t wanted_len,uint8_t out[32]){
     int fd=-1,ok=0;struct stat st;uint8_t*tail=0;size_t tailn,eocd,i;uint32_t cd,cd_size;uint16_t count;uint64_t off;
-    char wanted[DXP_STUB_ENTRY_LEN+1];reveal(wanted,DXP_STUB_ENTRY_X,DXP_STUB_ENTRY_LEN,DXP_STUB_ENTRY_MASK);
-    if(!path||(fd=open(path,O_RDONLY|O_CLOEXEC))<0||fstat(fd,&st)||st.st_size<22)goto done;
+    if(!path||!wanted||!wanted_len||wanted_len>255||(fd=open(path,O_RDONLY|O_CLOEXEC))<0||fstat(fd,&st)||st.st_size<22)goto done;
     tailn=(size_t)(st.st_size<65557?st.st_size:65557);tail=malloc(tailn);if(!tail||!read_at(fd,(uint64_t)st.st_size-tailn,tail,tailn))goto done;
     eocd=(size_t)-1;for(i=tailn-22;;i--){if(le32(tail+i)==0x06054b50u&&i+22u+le16(tail+i+20)==tailn){eocd=i;break;}if(i==0)break;}if(eocd==(size_t)-1)goto done;
     count=le16(tail+eocd+10);cd_size=le32(tail+eocd+12);cd=le32(tail+eocd+16);if((uint64_t)cd+cd_size>(uint64_t)st.st_size)goto done;off=cd;
     for(i=0;i<count;i++){
         uint8_t h[46];if(!read_at(fd,off,h,sizeof(h))||le32(h)!=0x02014b50u)goto done;
         uint16_t method=le16(h+10),name_len=le16(h+28),extra_len=le16(h+30),comment_len=le16(h+32);uint32_t comp_size=le32(h+20),clear_size=le32(h+24),local=le32(h+42);
-        if(name_len==DXP_STUB_ENTRY_LEN){char name[DXP_STUB_ENTRY_LEN+1];if(!read_at(fd,off+46,name,name_len))goto done;name[name_len]=0;if(!memcmp(name,wanted,name_len)){
+        if(name_len==wanted_len){char name[256];if(!read_at(fd,off+46,name,name_len))goto done;name[name_len]=0;if(!memcmp(name,wanted,name_len)){
             uint8_t lh[30];if(!read_at(fd,local,lh,sizeof(lh))||le32(lh)!=0x04034b50u||comp_size>33554432u||clear_size>33554432u)goto done;
             uint64_t data_off=(uint64_t)local+30u+le16(lh+26)+le16(lh+28);uint8_t*packed=malloc(comp_size?comp_size:1);uint8_t*clear=0;if(!packed||!read_at(fd,data_off,packed,comp_size)){if(packed)free(packed);goto done;}
             if(method==0&&comp_size==clear_size){sha256_ctx c;init(&c);update(&c,packed,comp_size);final(&c,out);ok=1;}
@@ -95,7 +94,25 @@ static int apk_stub_sha256(const char*path,uint8_t out[32]){
         }}
         off+=46u+name_len+extra_len+comment_len;if(off>(uint64_t)cd+cd_size)goto done;
     }
-done:memset(wanted,0,sizeof(wanted));if(tail)free(tail);if(fd>=0)close(fd);return ok;
+done:if(tail)free(tail);if(fd>=0)close(fd);return ok;
+}
+static int apk_stub_sha256(const char*path,uint8_t out[32]){
+    char wanted[DXP_STUB_ENTRY_LEN+1];reveal(wanted,DXP_STUB_ENTRY_X,DXP_STUB_ENTRY_LEN,DXP_STUB_ENTRY_MASK);
+    int ok=apk_entry_sha256(path,wanted,DXP_STUB_ENTRY_LEN,out);memset(wanted,0,sizeof(wanted));return ok;
+}
+static int verify_business_files(const char*path){
+#if DXP_BUSINESS_SO_COUNT > 0
+    size_t i;uint8_t digest[32];char name[256];
+    for(i=0;i<DXP_BUSINESS_SO_COUNT;i++){
+        size_t n=DXP_BUSINESS_SO_NAME_LENS[i];if(n==0||n>=sizeof(name))return 0;
+        reveal(name,DXP_BUSINESS_SO_NAMES[i],n,DXP_BUSINESS_SO_NAME_MASKS[i]);
+        int ok=apk_entry_sha256(path,name,n,digest)&&equal32(digest,DXP_BUSINESS_SO_SHA256[i]);
+        memset(name,0,sizeof(name));memset(digest,0,sizeof(digest));if(!ok)return 0;
+    }
+#else
+    (void)path;
+#endif
+    return 1;
 }
 static int hash_sealed(const char*path,const uint8_t*m1,const uint8_t*m2,uint8_t digest[32]){
     int fd=-1,ok=0;struct stat st;uint8_t*data=0;size_t i,p1=(size_t)-1,p2=(size_t)-1;sha256_ctx h;
@@ -112,7 +129,7 @@ static int verify_graph(JNIEnv*env,jbyteArray signer,jstring apk_path,jstring en
     if(!signer||!apk_path||!engine_path||!anchor_path||!capability||(*env)->GetArrayLength(env,signer)!=32||(*env)->GetArrayLength(env,capability)!=48)return 0;
     uint8_t s[32],cap[48],ed[32],ad[32],cert[32],stub[32];(*env)->GetByteArrayRegion(env,signer,0,32,(jbyte*)s);(*env)->GetByteArrayRegion(env,capability,0,48,(jbyte*)cap);if(!equal32(s,DXP_CERT_SHA256)||!verify_capability(s,cap,48))return 0;
     const char*ep=(*env)->GetStringUTFChars(env,engine_path,0),*an=(*env)->GetStringUTFChars(env,anchor_path,0),*ap=(*env)->GetStringUTFChars(env,apk_path,0);
-    int ok=ep&&an&&ap&&hash_sealed(ep,DXP_SELF_SEAL,DXP_PEER_SEAL,ed)&&equal32(ed,DXP_SELF_SEAL+16)&&hash_sealed(an,DXA_SELF_MARKER,DXA_PEER_MARKER,ad)&&equal32(ad,DXP_PEER_SEAL+16)&&apk_cert_sha256(ap,cert)&&equal32(cert,DXP_CERT_SHA256)&&apk_stub_sha256(ap,stub)&&equal32(stub,DXP_STUB_DEX_SHA256);
+    int ok=ep&&an&&ap&&hash_sealed(ep,DXP_SELF_SEAL,DXP_PEER_SEAL,ed)&&equal32(ed,DXP_SELF_SEAL+16)&&hash_sealed(an,DXA_SELF_MARKER,DXA_PEER_MARKER,ad)&&equal32(ad,DXP_PEER_SEAL+16)&&apk_cert_sha256(ap,cert)&&equal32(cert,DXP_CERT_SHA256)&&apk_stub_sha256(ap,stub)&&equal32(stub,DXP_STUB_DEX_SHA256)&&verify_business_files(ap);
     if(ep)(*env)->ReleaseStringUTFChars(env,engine_path,ep);if(an)(*env)->ReleaseStringUTFChars(env,anchor_path,an);if(ap)(*env)->ReleaseStringUTFChars(env,apk_path,ap);memset(s,0,32);memset(cap,0,48);return ok;
 }
 

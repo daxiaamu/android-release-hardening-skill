@@ -29,6 +29,9 @@ Generate each sample from the final APK, sign with an attacker test key, record 
 12. Change manifest entry points, aliases, task flags, and exported state.
 13. Replay a prior build's DEX/resources/SO into the current package.
 14. Fix the challenge/proof output to values from a prior run.
+15. Expand a business ELF `PT_LOAD`, move the section table, embed captured plaintext/keystream, and re-sign.
+16. Recompute a modified business SO's internal self-seal while leaving the outer shell unchanged.
+17. Patch only one device ABI while retaining pristine libraries for the other shipped ABIs.
 
 After single mutations, create evidence-driven combinations of two to four controls. Do not enumerate arbitrary combinations without a demonstrated dependency graph.
 
@@ -43,6 +46,8 @@ On an explicitly authorized root test device, test:
 - View text/order/style replacement after initial rendering.
 - Watchdog sleep/thread interruption.
 - Capability replay across challenge, phase, process, or build.
+- Plaintext/payload extraction after official startup followed by replay in an attacker-signed build.
+- Business SO replacement while shell SOs and shell DEX remain unchanged.
 
 Keep hooks narrow and reproducible. Save scripts and exact framework/module versions.
 

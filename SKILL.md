@@ -38,13 +38,15 @@ Do not silently substitute a demo application for artifact-shell mode. Do not tr
 - Keep per-build Java classes, native methods, JNI registration protocol, SO names, asset paths, metadata keys, watchdog interval, payload keys, and failure identifiers diversified.
 - Inspect the final ELF symbol/string surface. Source-level XOR does not count if compiler constant folding recreates plaintext; verify the packaged SO files.
 - Bind the shell `classes.dex` digest into the native verification graph and verify it directly from the installed APK.
+- Enumerate every original business SO before injecting shell libraries. Embed an obscured entry/digest manifest and remeasure each original SO directly from the installed APK during startup and watchdog checks.
+- Treat long-lived decrypted payloads as a regression risk. Prefer challenge/phase-scoped material, wipe native buffers immediately after use, and use process/epoch-bound capabilities rather than stable authorization booleans.
 - Sign to a temporary artifact, verify signature and structure, then atomically publish the output so a failed run cannot replace a known-good release.
 
 ## Bundled DXProtect tool
 
 The reusable artifact shell is bundled under `scripts/dxprotect/`. Read `references/dxprotect-tool.md` before use. Copy `scripts/dxprotect/dxprotect.config.example.json` to a secure project-external location, fill in the target/release toolchain paths, set only the named password environment variables, and run `scripts/dxprotect/dxprotect.ps1 -Config <config>`.
 
-Do not edit the target application's source in artifact-shell mode. Do not use the bundled fixture/test keys for a user release. The scripts `mutate_dex_string.py` and `mutate_apk_dex_string.py` are only for authorized tamper-regression samples after a clean protected baseline exists.
+Do not edit the target application's source in artifact-shell mode. Do not use the bundled fixture/test keys for a user release. The scripts `mutate_dex_string.py`, `mutate_apk_dex_string.py`, and `mutate_payload.py` are only for authorized tamper-regression samples after a clean protected baseline exists.
 
 ## Required design rules
 

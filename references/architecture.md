@@ -71,7 +71,10 @@ When the input is a final APK rather than source, use a separate shell toolchain
 3. Inject a randomized stub Application, launcher gateway, and highest-priority non-exported BootstrapProvider for original Application identity restoration.
 4. Compile independent Engine/Anchor libraries for exactly the target ABI set. Use per-build dynamic JNI registration and keep only `JNI_OnLoad` exported.
 5. Bind signer evidence, both SO cross-seals, process capability, runtime evidence, and the packaged stub DEX digest before decrypting payloads.
-6. Preserve the original `nativeLibraryDir` in all payload class loaders so NativeActivity and JNI applications remain functional.
-7. Rebuild, align, sign to a temporary APK, verify ZIP structure/signing schemes/certificate, then publish atomically.
+6. Before injecting shell libraries, hash every original `lib/<abi>/*.so`. Embed an obscured entry/digest manifest in the shell and remeasure those APK entries during startup and watchdog checks; an inner self-seal is not sufficient because an attacker can modify the SO and recompute its local digest.
+7. Preserve the original `nativeLibraryDir` in all payload class loaders so NativeActivity and JNI applications remain functional.
+8. Rebuild, align, sign to a temporary APK, verify ZIP structure/signing schemes/certificate, then publish atomically.
+
+Do not keep a complete decrypted business payload or key schedule in a stable native global longer than required. Decrypt per operation where compatible, wipe transient buffers after class/view creation, and bind process randomness plus lifecycle epoch into capabilities. These measures narrow extraction windows but do not make runtime code unavailable to a root attacker.
 
 Treat custom AppComponentFactory, split APK sets, sharedUserId, preview minSdk and unknown ABI as explicit preflight decisions. A shell that emits an APK it cannot plausibly start has failed even if its encryption is strong.

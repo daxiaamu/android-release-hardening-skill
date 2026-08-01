@@ -210,7 +210,8 @@ def patch_cross_seals(engine: Path, anchor: Path, engine_markers: list[bytes], a
     a[ap[0]:ap[0]+32] = ad; a[ap[1]:ap[1]+32] = ed
     engine.write_bytes(e); anchor.write_bytes(a)
 
-def verify_output_structure(apk: Path, profile: dict, abis, payload_count: int, stub_digest: str) -> dict:
+def verify_output_structure(apk: Path, profile: dict, abis, payload_count: int, stub_digest: str,
+                            business_native_manifest: list[dict]) -> dict:
     with zipfile.ZipFile(apk, "r") as archive:
         names = archive.namelist()
         if len(names) != len(set(names)): raise RuntimeError("output APK contains duplicate ZIP entries")
@@ -228,10 +229,16 @@ def verify_output_structure(apk: Path, profile: dict, abis, payload_count: int, 
             for so_name in (profile["so_name"], profile["anchor_so_name"]):
                 entry = f"lib/{abi}/lib{so_name}.so"
                 if entry not in names: raise RuntimeError("missing protected native library: " + entry)
+        for item in business_native_manifest:
+            if item["entry"] not in names: raise RuntimeError("missing measured business native library: " + item["entry"])
+            actual = hashlib.sha256(archive.read(item["entry"])).hexdigest().upper()
+            if actual != item["sha256"]: raise RuntimeError("business native digest changed during packaging: " + item["entry"])
         return {"zip_entry_count": len(names), "stub_dex_only": True,
-                "encrypted_payload_count": len(payloads), "native_abis": list(abis)}
+                "encrypted_payload_count": len(payloads), "native_abis": list(abis),
+                "measured_business_native_count": len(business_native_manifest)}
 
-def compile_stub(work: Path, key: bytes, cert_sha256: bytes, profile: dict, abis, min_api: int):
+def compile_stub(work: Path, key: bytes, cert_sha256: bytes, profile: dict, abis, min_api: int,
+                 business_native_manifest: list[dict]):
     gen = work / "generated"; classes = work / "classes"; dex = work / "stub-dex"; source_root = work / "stub-src"
     native_source = work / "native-src"
     native = work / "native" / "lib"; gen.mkdir(parents=True); classes.mkdir(); dex.mkdir(parents=True)
@@ -265,6 +272,33 @@ def compile_stub(work: Path, key: bytes, cert_sha256: bytes, profile: dict, abis
         encoded_native_string("DXP_RT_MARKER_5", "libhooker"),
         encoded_native_string("DXP_STUB_ENTRY", "classes.dex")
     ))
+    business_name_defs = []
+    business_name_refs = []
+    business_name_lens = []
+    business_name_masks = []
+    business_hashes = []
+    for index, item in enumerate(business_native_manifest):
+        value = item["entry"]
+        mask = secrets.randbelow(255) + 1
+        encoded = ",".join(f"0x{(byte ^ mask):02X}" for byte in value.encode("ascii"))
+        symbol = f"DXP_BUSINESS_SO_NAME_{index}_X"
+        business_name_defs.append(
+            f"static const volatile uint8_t {symbol}[{len(value)}]={{{encoded}}};\n")
+        business_name_refs.append(symbol)
+        business_name_lens.append(str(len(value)))
+        business_name_masks.append(f"0x{mask:02X}")
+        business_hashes.append("{" + ",".join(f"0x{x:02X}" for x in bytes.fromhex(item["sha256"])) + "}")
+    count = len(business_native_manifest)
+    if count:
+        business_native_header = (
+            "".join(business_name_defs) +
+            f"#define DXP_BUSINESS_SO_COUNT {count}\n" +
+            "static const volatile uint8_t* const DXP_BUSINESS_SO_NAMES[DXP_BUSINESS_SO_COUNT]={" + ",".join(business_name_refs) + "};\n" +
+            "static const uint16_t DXP_BUSINESS_SO_NAME_LENS[DXP_BUSINESS_SO_COUNT]={" + ",".join(business_name_lens) + "};\n" +
+            "static const uint8_t DXP_BUSINESS_SO_NAME_MASKS[DXP_BUSINESS_SO_COUNT]={" + ",".join(business_name_masks) + "};\n" +
+            "static const uint8_t DXP_BUSINESS_SO_SHA256[DXP_BUSINESS_SO_COUNT][32]={" + ",".join(business_hashes) + "};\n")
+    else:
+        business_native_header = "#define DXP_BUSINESS_SO_COUNT 0\n"
     (gen / "generated_key.h").write_text(
         f"#include <stdint.h>\nstatic const uint8_t DXP_KEY[32]={{{key_text}}};\n"
         f"static const uint8_t DXP_CERT_SHA256[32]={{{cert_text}}};\n"
@@ -273,7 +307,8 @@ def compile_stub(work: Path, key: bytes, cert_sha256: bytes, profile: dict, abis
         f"#define DXP_ENGINE_SELF_MARKER_BYTES {marker_texts[0]}\n"
         f"#define DXP_ENGINE_PEER_MARKER_BYTES {marker_texts[1]}\n"
         f"#define DXP_ANCHOR_SELF_MARKER_BYTES {marker_texts[2]}\n"
-        f"#define DXP_ANCHOR_PEER_MARKER_BYTES {marker_texts[3]}\n" + native_strings, encoding="ascii")
+        f"#define DXP_ANCHOR_PEER_MARKER_BYTES {marker_texts[3]}\n" + native_strings + business_native_header,
+        encoding="ascii")
     shutil.copytree(ROOT / "stub" / "src", source_root)
     profile_java = source_root / "com" / "daxiaamu" / "protector" / "BuildProfile.java"
     text = profile_java.read_text(encoding="utf-8")
@@ -387,7 +422,14 @@ def main():
         else:
             abis = [x.strip() for x in args.abis.split(",") if x.strip()]
             if not abis or set(abis) - supported: raise RuntimeError("invalid --abis value")
-        build_id = "DXP5-" + secrets.token_hex(4).upper(); key = secrets.token_bytes(32)
+        business_native_manifest = []
+        for native_file in sorted((decoded / "lib").glob("*/*.so")) if (decoded / "lib").exists() else []:
+            if native_file.parent.name not in abis: continue
+            business_native_manifest.append({
+                "entry": native_file.relative_to(decoded).as_posix(),
+                "sha256": hashlib.sha256(native_file.read_bytes()).hexdigest().upper()
+            })
+        build_id = "DXP6-" + secrets.token_hex(4).upper(); key = secrets.token_bytes(32)
         token = secrets.token_hex(6)
         java_package = "x" + secrets.token_hex(4) + ".y" + secrets.token_hex(4)
         def cname(prefix): return prefix + secrets.token_hex(4)
@@ -414,7 +456,8 @@ def main():
         for index, dex_file in enumerate(dex_files, 1):
             target = asset_dir / f"payload{index:02d}.bin"
             target.write_bytes(seal(dex_file.read_bytes(), key)); dex_file.unlink()
-        stub_dex, native_root, stub_dex_sha256 = compile_stub(work, key, cert_sha256, profile, abis, args.min_api)
+        stub_dex, native_root, stub_dex_sha256 = compile_stub(
+            work, key, cert_sha256, profile, abis, args.min_api, business_native_manifest)
         shutil.copy2(stub_dex, decoded / "classes.dex")
         for source in native_root.rglob("*.so"):
             abi = source.parent.name; target = decoded / "lib" / abi; target.mkdir(parents=True, exist_ok=True); shutil.copy2(source, target / source.name)
@@ -427,12 +470,13 @@ def main():
              "--v1-signing-enabled", "true", "--v2-signing-enabled", "true", "--v3-signing-enabled", "true",
              "--out", signed, aligned])
         verify = run([BT / "apksigner.bat", "verify", "--verbose", "--print-certs", signed], quiet=True)
-        output_structure = verify_output_structure(signed, profile, abis, len(dex_files), stub_dex_sha256)
+        output_structure = verify_output_structure(
+            signed, profile, abis, len(dex_files), stub_dex_sha256, business_native_manifest)
         publish_temp = args.output.with_name("." + args.output.name + ".tmp-" + secrets.token_hex(4))
         shutil.copy2(signed, publish_temp)
         os.replace(publish_temp, args.output)
         report = {
-            "schema": 1, "build_id": build_id, "input": str(args.input.resolve()),
+            "schema": 2, "build_id": build_id, "input": str(args.input.resolve()),
             "input_sha256": hashlib.sha256(args.input.read_bytes()).hexdigest().upper(),
             "output": str(args.output.resolve()),
             "output_sha256": hashlib.sha256(args.output.read_bytes()).hexdigest().upper(),
@@ -441,9 +485,10 @@ def main():
             "dex_payload_count": len(dex_files), "abis": abis, "min_shell_api": args.min_api,
             "compatibility_preflight": compatibility,
             "output_structure": output_structure,
+            "business_native_manifest": business_native_manifest,
             "signer_cert_sha256": cert_sha256.hex().upper(),
             "payload_format": "DXPROT01/HMAC-SHA256/SHA256-CTR", "diversification": profile,
-            "native_self_seal": "two-library SHA-256 cross-seal/digest-slots-zeroed",
+            "native_self_seal": "two-library SHA-256 cross-seal/digest-slots-zeroed + original business SO APK digest manifest",
             "capability": "48-byte process-bound nonce + HMAC-SHA256",
             "jni_binding": "per-build method names + XOR-obscured RegisterNatives/JNI_OnLoad only",
             "stub_dex_sha256": stub_dex_sha256
