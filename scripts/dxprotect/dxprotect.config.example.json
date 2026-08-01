@@ -1,0 +1,16 @@
+{
+  "input": "D:/path/to/your-app-release.apk",
+  "output": "D:/path/to/output/your-app-protected.apk",
+  "keystore": "D:/secure/release-signing.jks",
+  "alias": "release",
+  "ks_pass_env": "DXP_STORE_PASS",
+  "key_pass_env": "DXP_KEY_PASS",
+  "apktool": "D:/tools/apktool.jar",
+  "android_sdk": "D:/AndroidSDK",
+  "java_home": "C:/Program Files/Java/jdk-17",
+  "d8_java_home": "C:/Program Files/Java/jdk-17",
+  "work_root": "D:/dxprotect-work",
+  "abis": "auto",
+  "min_api": 23,
+  "runtime_guard": "strict"
+}
