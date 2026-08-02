@@ -38,6 +38,8 @@ Generate each sample from the final APK, sign with an attacker test key, record 
 21. Patch the outer-share Java facade while leaving both shell SOs unchanged; require shell DEX measurement or the native graph to reject it.
 22. Extract only one shell SO and attempt to emulate the share protocol; verify the complementary fragment is required for every challenge/domain.
 23. Search all packaged ELFs for descriptive self-seal markers and verify per-build marker diversification across two consecutive builds.
+24. Replace a graph-state producer with a success-only stub that leaves its output buffer zero or untouched; require proof/scene/view-seal mismatch or the prescribed failure surface.
+25. Change one rendered protected string after proof calculation; require the externally compared View seal/layout or the next watchdog epoch to fail.
 
 After single mutations, create evidence-driven combinations of two to four controls. Do not enumerate arbitrary combinations without a demonstrated dependency graph.
 

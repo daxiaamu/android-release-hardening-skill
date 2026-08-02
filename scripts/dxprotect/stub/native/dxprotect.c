@@ -100,19 +100,21 @@ static int apk_stub_sha256(const char*path,uint8_t out[32]){
     char wanted[DXP_STUB_ENTRY_LEN+1];reveal(wanted,DXP_STUB_ENTRY_X,DXP_STUB_ENTRY_LEN,DXP_STUB_ENTRY_MASK);
     int ok=apk_entry_sha256(path,wanted,DXP_STUB_ENTRY_LEN,out);memset(wanted,0,sizeof(wanted));return ok;
 }
-static int verify_business_files(const char*path){
+static int measure_business_files(const char*path,uint8_t aggregate[32]){
+    sha256_ctx state;init(&state);int all_ok=1;
 #if DXP_BUSINESS_SO_COUNT > 0
     size_t i;uint8_t digest[32];char name[256];
     for(i=0;i<DXP_BUSINESS_SO_COUNT;i++){
-        size_t n=DXP_BUSINESS_SO_NAME_LENS[i];if(n==0||n>=sizeof(name))return 0;
+        size_t n=DXP_BUSINESS_SO_NAME_LENS[i];memset(digest,0,sizeof(digest));if(n==0||n>=sizeof(name)){all_ok=0;continue;}
         reveal(name,DXP_BUSINESS_SO_NAMES[i],n,DXP_BUSINESS_SO_NAME_MASKS[i]);
-        int ok=apk_entry_sha256(path,name,n,digest)&&equal32(digest,DXP_BUSINESS_SO_SHA256[i]);
-        memset(name,0,sizeof(name));memset(digest,0,sizeof(digest));if(!ok)return 0;
+        int ok=apk_entry_sha256(path,name,n,digest);update(&state,digest,32);update(&state,DXP_BUSINESS_SO_SHA256[i],32);
+        if(!ok||!equal32(digest,DXP_BUSINESS_SO_SHA256[i]))all_ok=0;memset(name,0,sizeof(name));memset(digest,0,sizeof(digest));
     }
 #else
     (void)path;
+    update(&state,DXP_STUB_DEX_SHA256,32);
 #endif
-    return 1;
+    final(&state,aggregate);return all_ok;
 }
 static int hash_sealed(const char*path,const uint8_t*m1,const uint8_t*m2,uint8_t digest[32]){
     int fd=-1,ok=0;struct stat st;uint8_t*data=0;size_t i,p1=(size_t)-1,p2=(size_t)-1;sha256_ctx h;
@@ -124,14 +126,18 @@ static int hash_sealed(const char*path,const uint8_t*m1,const uint8_t*m2,uint8_t
 done: if(data){memset(data,0,(size_t)(st.st_size>0?st.st_size:0));free(data);}if(fd>=0)close(fd);return ok;
 }
 static int verify_capability(const uint8_t signer[32],const uint8_t*cap,size_t n){uint8_t msg[52],tag[32];uint32_t pid;if(!cap||n!=48)return 0;memcpy(msg,signer,32);memcpy(msg+32,cap,16);pid=(uint32_t)getpid();msg[48]=pid>>24;msg[49]=pid>>16;msg[50]=pid>>8;msg[51]=pid;hmac_key(DXP_ANCHOR_KEY,msg,52,tag);memset(msg,0,52);return equal32(tag,cap+16);}
-static int verify_graph(JNIEnv*env,jbyteArray signer,jstring apk_path,jstring engine_path,jstring anchor_path,jbyteArray capability){
-    if(!runtime_clean())return 0;
+static int verify_graph_state(JNIEnv*env,jbyteArray signer,jstring apk_path,jstring engine_path,jstring anchor_path,jbyteArray capability,uint8_t graph[32]){
+    uint8_t material[32*7+8];size_t mp=0;int clean=runtime_clean();memset(graph,0,32);
     if(!signer||!apk_path||!engine_path||!anchor_path||!capability||(*env)->GetArrayLength(env,signer)!=32||(*env)->GetArrayLength(env,capability)!=48)return 0;
-    uint8_t s[32],cap[48],ed[32],ad[32],cert[32],stub[32];(*env)->GetByteArrayRegion(env,signer,0,32,(jbyte*)s);(*env)->GetByteArrayRegion(env,capability,0,48,(jbyte*)cap);if(!equal32(s,DXP_CERT_SHA256)||!verify_capability(s,cap,48))return 0;
+    uint8_t s[32],cap[48],ed[32]={0},ad[32]={0},cert[32]={0},stub[32]={0},business[32]={0};(*env)->GetByteArrayRegion(env,signer,0,32,(jbyte*)s);(*env)->GetByteArrayRegion(env,capability,0,48,(jbyte*)cap);
     const char*ep=(*env)->GetStringUTFChars(env,engine_path,0),*an=(*env)->GetStringUTFChars(env,anchor_path,0),*ap=(*env)->GetStringUTFChars(env,apk_path,0);
-    int ok=ep&&an&&ap&&hash_sealed(ep,DXP_SELF_SEAL,DXP_PEER_SEAL,ed)&&equal32(ed,DXP_SELF_SEAL+16)&&hash_sealed(an,DXA_SELF_MARKER,DXA_PEER_MARKER,ad)&&equal32(ad,DXP_PEER_SEAL+16)&&apk_cert_sha256(ap,cert)&&equal32(cert,DXP_CERT_SHA256)&&apk_stub_sha256(ap,stub)&&equal32(stub,DXP_STUB_DEX_SHA256)&&verify_business_files(ap);
-    if(ep)(*env)->ReleaseStringUTFChars(env,engine_path,ep);if(an)(*env)->ReleaseStringUTFChars(env,anchor_path,an);if(ap)(*env)->ReleaseStringUTFChars(env,apk_path,ap);memset(s,0,32);memset(cap,0,48);return ok;
+    int eok=ep&&hash_sealed(ep,DXP_SELF_SEAL,DXP_PEER_SEAL,ed),aok=an&&hash_sealed(an,DXA_SELF_MARKER,DXA_PEER_MARKER,ad),cok=ap&&apk_cert_sha256(ap,cert),sok=ap&&apk_stub_sha256(ap,stub),bok=ap&&measure_business_files(ap,business);
+    memcpy(material+mp,s,32);mp+=32;memcpy(material+mp,ed,32);mp+=32;memcpy(material+mp,ad,32);mp+=32;memcpy(material+mp,cert,32);mp+=32;memcpy(material+mp,stub,32);mp+=32;memcpy(material+mp,business,32);mp+=32;memcpy(material+mp,cap+16,32);mp+=32;
+    material[mp++]=(uint8_t)clean;material[mp++]=(uint8_t)eok;material[mp++]=(uint8_t)aok;material[mp++]=(uint8_t)cok;material[mp++]=(uint8_t)sok;material[mp++]=(uint8_t)bok;material[mp++]=(uint8_t)equal32(s,DXP_CERT_SHA256);material[mp++]=(uint8_t)verify_capability(s,cap,48);hmac_key(DXP_KEY,material,mp,graph);
+    int ok=clean&&eok&&aok&&cok&&sok&&bok&&equal32(s,DXP_CERT_SHA256)&&equal32(ed,DXP_SELF_SEAL+16)&&equal32(ad,DXP_PEER_SEAL+16)&&equal32(cert,DXP_CERT_SHA256)&&equal32(stub,DXP_STUB_DEX_SHA256)&&verify_capability(s,cap,48);
+    if(ep)(*env)->ReleaseStringUTFChars(env,engine_path,ep);if(an)(*env)->ReleaseStringUTFChars(env,anchor_path,an);if(ap)(*env)->ReleaseStringUTFChars(env,apk_path,ap);memset(material,0,sizeof(material));memset(s,0,32);memset(cap,0,48);return ok;
 }
+static int verify_graph(JNIEnv*env,jbyteArray signer,jstring apk_path,jstring engine_path,jstring anchor_path,jbyteArray capability){uint8_t graph[32];int ok=verify_graph_state(env,signer,apk_path,engine_path,anchor_path,capability,graph);memset(graph,0,32);return ok;}
 
 static jbyteArray native_decrypt(JNIEnv*env,jclass type,jbyteArray input,jbyteArray signer,jstring apk_path,jstring native_path,jstring anchor_path,jbyteArray capability){
     (void)type;if(!input||!verify_graph(env,signer,apk_path,native_path,anchor_path,capability))return 0;
@@ -148,13 +154,13 @@ static jboolean native_recheck(JNIEnv*env,jclass type,jbyteArray signer,jstring 
 
 static jbyteArray native_share(JNIEnv*env,jclass type,jbyteArray signer,jstring apk_path,jstring native_path,
                                jstring anchor_path,jbyteArray capability,jbyteArray anchor_fragment,jstring challenge,jint phase,jint domain){
-    (void)type;if(!anchor_fragment||(*env)->GetArrayLength(env,anchor_fragment)!=32||!challenge||phase<0||phase>3||domain<0||domain>7||
-        !verify_graph(env,signer,apk_path,native_path,anchor_path,capability))return 0;
+    uint8_t graph[32];(void)type;if(!anchor_fragment||(*env)->GetArrayLength(env,anchor_fragment)!=32||!challenge||phase<0||phase>3||domain<0||domain>7||
+        !verify_graph_state(env,signer,apk_path,native_path,anchor_path,capability,graph))return 0;
     const char*raw=(*env)->GetStringUTFChars(env,challenge,0);if(!raw)return 0;size_t n=strlen(raw);
     if(n==0||n>256){(*env)->ReleaseStringUTFChars(env,challenge,raw);return 0;}
-    uint8_t fragment[32],key[32],msg[512],out[32],round[104],manifest[32];size_t p=0;int i,r;sha256_ctx manifest_hash;
+    uint8_t fragment[32],key[32],msg[512],out[32],round[136],manifest[32];size_t p=0;int i,r;sha256_ctx manifest_hash;
     (*env)->GetByteArrayRegion(env,anchor_fragment,0,32,(jbyte*)fragment);
-    for(i=0;i<32;i++)key[i]=(uint8_t)(DXP_BIND_A[i]^fragment[31-i]^DXP_KEY[(i*7)&31]^
+    for(i=0;i<32;i++)key[i]=(uint8_t)(DXP_BIND_A[i]^fragment[31-i]^graph[(i*13)&31]^DXP_KEY[(i*7)&31]^
         DXP_SELF_SEAL[16+((i+5)&31)]^DXP_PEER_SEAL[16+((i+19)&31)]);
     msg[p++]=(uint8_t)phase;msg[p++]=(uint8_t)domain;msg[p++]=(uint8_t)(n>>8);msg[p++]=(uint8_t)n;
     memcpy(msg+p,raw,n);p+=n;memcpy(msg+p,DXP_CERT_SHA256,32);p+=32;
@@ -165,16 +171,16 @@ static jbyteArray native_share(JNIEnv*env,jclass type,jbyteArray signer,jstring 
 #else
     update(&manifest_hash,DXP_STUB_DEX_SHA256,32);
 #endif
-    final(&manifest_hash,manifest);memcpy(msg+p,manifest,32);p+=32;memcpy(msg+p,fragment,32);p+=32;
+    final(&manifest_hash,manifest);memcpy(msg+p,manifest,32);p+=32;memcpy(msg+p,fragment,32);p+=32;memcpy(msg+p,graph,32);p+=32;
     hmac_key(key,msg,p,out);
     for(r=0;r<3;r++){
         memcpy(round,out,32);for(i=0;i<32;i++)round[32+i]=(uint8_t)(key[(i+r*5)&31]^fragment[(i+r*9)&31]);
-        memcpy(round+64,manifest,32);round[96]=(uint8_t)phase;round[97]=(uint8_t)domain;round[98]=(uint8_t)r;round[99]=(uint8_t)n;
-        memcpy(round+100,DXP_STUB_DEX_SHA256+r*4,4);hmac_key(key,round,104,out);
+        memcpy(round+64,manifest,32);memcpy(round+96,graph,32);round[128]=(uint8_t)phase;round[129]=(uint8_t)domain;round[130]=(uint8_t)r;round[131]=(uint8_t)n;
+        memcpy(round+132,DXP_STUB_DEX_SHA256+r*4,4);hmac_key(key,round,136,out);
     }
     (*env)->ReleaseStringUTFChars(env,challenge,raw);jbyteArray result=(*env)->NewByteArray(env,32);
     if(result)(*env)->SetByteArrayRegion(env,result,0,32,(jbyte*)out);
-    memset(fragment,0,sizeof(fragment));memset(key,0,sizeof(key));memset(msg,0,sizeof(msg));memset(out,0,sizeof(out));memset(round,0,sizeof(round));memset(manifest,0,sizeof(manifest));return result;
+    memset(graph,0,sizeof(graph));memset(fragment,0,sizeof(fragment));memset(key,0,sizeof(key));memset(msg,0,sizeof(msg));memset(out,0,sizeof(out));memset(round,0,sizeof(round));memset(manifest,0,sizeof(manifest));return result;
 }
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM*vm,void*reserved){
