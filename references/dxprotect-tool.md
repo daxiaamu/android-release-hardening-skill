@@ -54,11 +54,14 @@ python ./tools/protect.py `
 
 已覆盖的本地回归包括：多 DEX、自定义 Application 身份恢复、壳 BootstrapProvider、普通 Activity、NativeActivity、自带 JNI/SO、API 27+ 内存加载和原 nativeLibraryDir 继承。
 
+Launcher 兼容层会解析普通 `activity` 或 `activity-alias` 的真实目标，将解析后的启动主题、任务/窗口属性和原始 MAIN/LAUNCHER filter 迁移到随机 Gateway。Android 12+ 上 Gateway 会暂留系统 SplashScreen，直到原 Activity 覆盖 Gateway 后再释放；交接使用源 Intent 的完整副本，保留 action、data、categories、授权/载荷 flags、ClipData、selector、source bounds 和 extras，再移除只属于桌面根入口的 `NEW_TASK`、`RESET_TASK_IF_NEEDED`、`NEW_DOCUMENT`、`MULTIPLE_TASK` 与 `TASK_ON_HOME`，防止内部交接被重新投递给 Gateway。多个 MAIN/LAUNCHER 组件当前会明确拒绝构建，避免静默破坏动态图标或 alias 启停语义。
+
 构建会拒绝：
 
 - Split APK、功能 Split、已加固 APK；
 - 自定义 `android:appComponentFactory`（它可能早于壳 DEX 加载）；
 - `sharedUserId` APK、预览版代号 minSdk、未知 ABI；
+- 多个 MAIN/LAUNCHER 组件（需先设计逐入口 alias/动态图标映射）；
 - 重复 ZIP 条目、缺失/外露 DEX、壳 DEX 哈希变化、缺失 native 库或 payload 数量不一致。
 
 多进程、isolatedProcess、Direct Boot 和 largeHeap 会写入 JSON 兼容性警告，必须在目标设备上逐项回归。AAB 需先生成 universal/standalone APK；本工具当前不直接处理 split 集合。
@@ -70,7 +73,7 @@ python ./tools/protect.py `
 - `*.apk`：最终对齐并签名的 APK；
 - `*.apk.dxprotect.json`：输入/输出 SHA-256、签名证书摘要、ABI、原 Application/Launcher、兼容性预检、随机化档案、壳 DEX 摘要及业务 SO entry/digest 清单。
 
-发布前至少验证冷启动、升级安装、前后台切换、15 秒停留、自定义 Application、全部 ABI/JNI 功能，以及以下篡改结果：重新签名、壳 DEX 修改、payload 修改、壳 SO 修改、每个原始业务 SO 独立修改、Manifest 入口修改。必须包含一个“只修改业务 SO 并重算其内部 self-seal”的样本。防御成功必须显示规定的不可取消失败弹窗；崩溃、黑屏或静默退出均属于兼容性失败。
+发布前至少验证冷启动 SplashScreen（Android 12+）、升级安装、前后台切换、15 秒停留、App Link/通知/分享入口的完整 Intent、自定义 Application、全部 ABI/JNI 功能，以及以下篡改结果：重新签名、壳 DEX 修改、payload 修改、壳 SO 修改、每个原始业务 SO 独立修改、Manifest 入口修改。必须包含一个“只修改业务 SO 并重算其内部 self-seal”的样本。防御成功必须显示规定的不可取消失败弹窗；崩溃、黑屏或静默退出均属于兼容性失败。
 
 还必须执行剥壳重建回归：运行时提取业务 DEX，恢复原 Application/launcher，删除壳 provider、metadata、assets 和壳 SO，只保留业务资源与业务 SO 后用测试证书重签。若该裸包只需把业务签名/自校验分支改为成功，就能继续计算新 challenge 的正确业务输出，则外壳仍是可删除的启动门，不能作为发布通过条件。
 

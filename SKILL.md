@@ -34,6 +34,8 @@ Do not silently substitute a demo application for artifact-shell mode. Do not tr
 - Accept a standalone APK as input and emit a new protected APK plus a machine-readable report; never require or rewrite business source unless the user separately requests source mode.
 - Preserve original native libraries and ABI coverage. Ensure the in-memory/DexClassLoader native search path includes the original `nativeLibraryDir`.
 - Restore a custom original Application as the framework-visible identity before business providers/activities rely on it; validate this with a fixture that casts `getApplication()` to the original type.
+- Preserve the resolved launcher theme, task/window attributes, and exact MAIN/LAUNCHER filter on the shell gateway. On Android 12+, retain the system splash until the original Activity covers the gateway; clone the complete source Intent rather than rebuilding only action/extras, then strip launcher-only root-task routing flags for the internal handoff.
+- Resolve `activity-alias` launchers through `targetActivity`. Reject multiple launcher components until their enable/disable and dynamic-icon semantics can be preserved; never silently collapse them to one entry.
 - Reject unsupported early-loading structures such as a custom `appComponentFactory` rather than emitting a likely-crashing APK.
 - Keep per-build Java classes, native methods, JNI registration protocol, SO names, asset paths, metadata keys, watchdog interval, payload keys, and failure identifiers diversified.
 - Inspect the final ELF symbol/string surface. Source-level XOR does not count if compiler constant folding recreates plaintext; verify the packaged SO files.

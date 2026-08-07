@@ -89,6 +89,40 @@ def resolve_component(package: str, raw: str) -> str:
     if "." not in raw: return package + "." + raw
     return raw
 
+def launcher_entries(app: ET.Element, package: str) -> list[dict]:
+    activities = {
+        resolve_component(package, node.get(A + "name", "")): node
+        for node in list(app) if node.tag == "activity"
+    }
+    entries = []
+    for component in list(app):
+        if component.tag not in ("activity", "activity-alias"): continue
+        filters = []
+        for intent_filter in component.findall("intent-filter"):
+            actions = {x.get(A + "name") for x in intent_filter.findall("action")}
+            categories = {x.get(A + "name") for x in intent_filter.findall("category")}
+            if "android.intent.action.MAIN" in actions and "android.intent.category.LAUNCHER" in categories:
+                filters.append(intent_filter)
+        if not filters: continue
+        name = resolve_component(package, component.get(A + "name", ""))
+        target = component
+        target_name = None
+        if component.tag == "activity-alias":
+            target_name = resolve_component(package, component.get(A + "targetActivity", ""))
+            target = activities.get(target_name)
+            if target is None: raise RuntimeError("launcher activity-alias target not found: " + target_name)
+        explicit_theme = component.get(A + "theme")
+        target_theme = target.get(A + "theme") if target is not None else None
+        application_theme = app.get(A + "theme")
+        resolved_theme = explicit_theme or target_theme or application_theme
+        theme_source = "component" if explicit_theme else ("targetActivity" if target_theme else ("application" if application_theme else None))
+        entries.append({
+            "node": component, "target_node": target, "filters": filters, "name": name,
+            "target": target_name, "explicit_theme": explicit_theme,
+            "resolved_theme": resolved_theme, "theme_source": theme_source
+        })
+    return entries
+
 def inspect_manifest(path: Path) -> dict:
     tree, app, original = app_name(path)
     root = tree.getroot(); package = root.get("package", "")
@@ -114,12 +148,15 @@ def inspect_manifest(path: Path) -> dict:
         raise RuntimeError("android:sharedUserId APKs are not supported by the reusable shell")
     if original_min and not original_min.isdigit():
         raise RuntimeError("preview/codename minSdkVersion is not supported: " + original_min)
+    launchers = launcher_entries(app, package)
     warnings = []
     if processes: warnings.append("multi-process components require per-process device regression")
     if isolated: warnings.append("isolatedProcess components require explicit device regression")
     if direct_boot or app.get(A + "directBootAware") == "true":
         warnings.append("Direct Boot behavior must be tested before user unlock")
     if app.get(A + "largeHeap") == "true": warnings.append("largeHeap application: measure shell startup memory")
+    if len(launchers) > 1:
+        warnings.append("multiple MAIN/LAUNCHER components require explicit launcher/alias regression")
     return {
         "package": package,
         "original_application": original,
@@ -129,6 +166,11 @@ def inspect_manifest(path: Path) -> dict:
         "declared_processes": sorted(processes),
         "isolated_process_components": isolated,
         "direct_boot_components": direct_boot,
+        "launcher_components": [{
+            "name": item["name"], "kind": item["node"].tag, "target": item["target"],
+            "filter_count": len(item["filters"]), "explicit_theme": item["explicit_theme"],
+            "resolved_theme": item["resolved_theme"], "theme_source": item["theme_source"]
+        } for item in launchers],
         "warnings": warnings
     }
 
@@ -144,28 +186,40 @@ def patch_manifest(path: Path, build_id: str, profile: dict, min_api: int):
     original_min_sdk = uses_sdk.get(A + "minSdkVersion")
     effective_min_sdk = max(min_api, int(original_min_sdk)) if original_min_sdk and original_min_sdk.isdigit() else min_api
     uses_sdk.set(A + "minSdkVersion", str(effective_min_sdk))
-    launcher = None
-    for component in list(app):
-        if component.tag not in ("activity", "activity-alias"): continue
-        for intent_filter in list(component):
-            if intent_filter.tag != "intent-filter": continue
-            actions = {x.get(A + "name") for x in intent_filter.findall("action")}
-            categories = {x.get(A + "name") for x in intent_filter.findall("category")}
-            if "android.intent.action.MAIN" in actions and "android.intent.category.LAUNCHER" in categories:
-                if launcher is None:
-                    launcher = resolve_component(package, component.get(A + "name", ""))
-                component.remove(intent_filter)
-    if not launcher: raise RuntimeError("manifest has no MAIN/LAUNCHER component")
+    launchers = launcher_entries(app, package)
+    if not launchers: raise RuntimeError("manifest has no MAIN/LAUNCHER component")
+    if len(launchers) > 1:
+        names = ", ".join(item["name"] for item in launchers)
+        raise RuntimeError("multiple MAIN/LAUNCHER components are not safely supported yet: " + names)
+    launcher_entry = launchers[0]
+    launcher = launcher_entry["name"]
+    for intent_filter in launcher_entry["filters"]:
+        launcher_entry["node"].remove(intent_filter)
     app.set(A + "name", profile["stub_fqcn"])
     app.set(A + "extractNativeLibs", "true")
     app.set(A + "debuggable", "false")
     gateway = ET.SubElement(app, "activity")
     gateway.set(A + "name", profile["gateway_fqcn"])
-    gateway.set(A + "exported", "true"); gateway.set(A + "launchMode", "singleTask")
-    gateway.set(A + "excludeFromRecents", "false")
-    intent_filter = ET.SubElement(gateway, "intent-filter")
-    action = ET.SubElement(intent_filter, "action"); action.set(A + "name", "android.intent.action.MAIN")
-    category = ET.SubElement(intent_filter, "category"); category.set(A + "name", "android.intent.category.LAUNCHER")
+    gateway.set(A + "exported", "true")
+    # Android 12+ attaches the system splash to the first visible activity.  Preserve
+    # the resolved launcher theme and task/window semantics on the shell gateway so
+    # replacing the launcher does not erase the target application's splash contract.
+    inherited_activity_attributes = (
+        "theme", "label", "icon", "banner", "logo", "process", "launchMode", "taskAffinity",
+        "allowTaskReparenting", "alwaysRetainTaskState", "clearTaskOnLaunch", "finishOnTaskLaunch",
+        "noHistory", "excludeFromRecents", "documentLaunchMode", "maxRecents",
+        "relinquishTaskIdentity", "autoRemoveFromRecents", "screenOrientation", "configChanges",
+        "windowSoftInputMode", "hardwareAccelerated", "resizeableActivity", "supportsPictureInPicture",
+        "colorMode", "lockTaskMode", "showForAllUsers", "turnScreenOn", "showWhenLocked", "immersive"
+    )
+    source_nodes = (launcher_entry["node"], launcher_entry["target_node"])
+    for attribute in inherited_activity_attributes:
+        value = next((node.get(A + attribute) for node in source_nodes if node is not None and node.get(A + attribute) is not None), None)
+        if value is not None: gateway.set(A + attribute, value)
+    if launcher_entry["resolved_theme"] is not None:
+        gateway.set(A + "theme", launcher_entry["resolved_theme"])
+    for intent_filter in launcher_entry["filters"]:
+        gateway.append(copy.deepcopy(intent_filter))
     bootstrap = ET.SubElement(app, "provider")
     bootstrap.set(A + "name", profile["bootstrap_fqcn"])
     bootstrap.set(A + "authorities", package + "." + profile["bootstrap_authority"])
@@ -504,7 +558,7 @@ def main():
         shutil.copy2(signed, publish_temp)
         os.replace(publish_temp, args.output)
         report = {
-            "schema": 3, "build_id": build_id, "input": str(args.input.resolve()),
+            "schema": 4, "build_id": build_id, "input": str(args.input.resolve()),
             "input_sha256": hashlib.sha256(args.input.read_bytes()).hexdigest().upper(),
             "output": str(args.output.resolve()),
             "output_sha256": hashlib.sha256(args.output.read_bytes()).hexdigest().upper(),
@@ -512,6 +566,7 @@ def main():
             "original_min_sdk": original_min_sdk, "effective_min_sdk": effective_min_sdk,
             "dex_payload_count": len(dex_files), "abis": abis, "min_shell_api": args.min_api,
             "compatibility_preflight": compatibility,
+            "launcher_handoff": "resolved launcher theme/task attributes + exact launcher filter + Intent payload/grant clone with launcher root-task flag translation + API31 retained splash until original Activity covers gateway",
             "output_structure": output_structure,
             "business_native_manifest": business_native_manifest,
             "signer_cert_sha256": cert_sha256.hex().upper(),

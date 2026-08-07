@@ -15,11 +15,18 @@ import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 
 public final class GatewayActivity extends Activity {
     private final Handler repair = new Handler(Looper.getMainLooper());
     private AlertDialog dialog;
     private boolean exiting;
+    private boolean handoffStarted;
+    private boolean handoffPaused;
+    private boolean splashReleaseRequested;
+    private Object retainedSplashView;
 
     private final Runnable repairFailureSurface = new Runnable() {
         @Override public void run() {
@@ -31,11 +38,13 @@ public final class GatewayActivity extends Activity {
     };
 
     @Override protected void onCreate(Bundle state) {
+        retainSystemSplash();
         super.onCreate(state);
         if (StubApplication.validateNow(this)) {
             launchOriginal();
             return;
         }
+        releaseSystemSplash();
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
         buildFallbackSurface();
         showFailureDialog();
@@ -44,8 +53,31 @@ public final class GatewayActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        if (handoffStarted && handoffPaused) {
+            releaseSystemSplash();
+            finish();
+            overridePendingTransition(0, 0);
+            return;
+        }
         if (!exiting && !StubApplication.isIntegrityReady() && (dialog == null || !dialog.isShowing())) {
             showFailureDialog();
+        }
+    }
+
+    @Override protected void onPause() {
+        if (handoffStarted) handoffPaused = true;
+        super.onPause();
+    }
+
+    @Override protected void onStop() {
+        super.onStop();
+        // Keep the gateway (and its Android 12+ splash window) alive until the
+        // original launcher has actually covered it. Finishing immediately after
+        // startActivity() can expose the desktop while the business Activity starts.
+        if (handoffStarted && !isFinishing()) {
+            releaseSystemSplash();
+            finish();
+            overridePendingTransition(0, 0);
         }
     }
 
@@ -55,17 +87,69 @@ public final class GatewayActivity extends Activity {
         try {
             String launcher = StubApplication.originalLauncher(this);
             Intent source = getIntent();
-            Intent target = new Intent(source == null ? Intent.ACTION_MAIN : source.getAction());
-            if (source != null && source.getExtras() != null) target.putExtras(source.getExtras());
+            // Preserve launcher/deep-link semantics in full: data URI, MIME type,
+            // categories, flags, ClipData, selector, bounds and extras.
+            Intent target = source == null ? new Intent(Intent.ACTION_MAIN) : new Intent(source);
             target.setClassName(getPackageName(), launcher);
+            // Desktop launchers add task-routing flags for the exported root. Keeping
+            // them on the internal handoff can make ActivityTaskManager deliver the
+            // request back to this task's current top (the gateway) instead of
+            // creating the original Activity. Preserve payload/grant flags but
+            // translate root-task routing into an in-task Activity transition.
+            int rootTaskFlags = Intent.FLAG_ACTIVITY_NEW_TASK
+                    | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
+                    | Intent.FLAG_ACTIVITY_NEW_DOCUMENT
+                    | Intent.FLAG_ACTIVITY_MULTIPLE_TASK
+                    | Intent.FLAG_ACTIVITY_TASK_ON_HOME;
+            target.setFlags(target.getFlags() & ~rootTaskFlags);
+            handoffStarted = true;
             startActivity(target);
-            finish();
+            overridePendingTransition(0, 0);
         } catch (Throwable ignored) {
+            handoffStarted = false;
+            releaseSystemSplash();
             StubApplication.revokeIntegrity();
             buildFallbackSurface();
             showFailureDialog();
             repair.postDelayed(repairFailureSurface, 700L);
         }
+    }
+
+    private void retainSystemSplash() {
+        if (android.os.Build.VERSION.SDK_INT < 31) return;
+        try {
+            final Class<?> listenerType = Class.forName("android.window.SplashScreen$OnExitAnimationListener");
+            Object listener = Proxy.newProxyInstance(listenerType.getClassLoader(), new Class<?>[] { listenerType },
+                    new InvocationHandler() {
+                        @Override public Object invoke(Object proxy, Method method, Object[] args) {
+                            if ("onSplashScreenExit".equals(method.getName()) && args != null && args.length == 1) {
+                                retainedSplashView = args[0];
+                                if (splashReleaseRequested) removeRetainedSplash();
+                            }
+                            return null;
+                        }
+                    });
+            Object splash = Activity.class.getMethod("getSplashScreen").invoke(this);
+            Class<?> splashType = Class.forName("android.window.SplashScreen");
+            splashType.getMethod("setOnExitAnimationListener", listenerType).invoke(splash, listener);
+        } catch (Throwable ignored) {
+            // Theme inheritance still provides the platform fallback on devices
+            // where the public API is absent or vendor-modified.
+        }
+    }
+
+    private void releaseSystemSplash() {
+        splashReleaseRequested = true;
+        removeRetainedSplash();
+    }
+
+    private void removeRetainedSplash() {
+        Object view = retainedSplashView;
+        retainedSplashView = null;
+        if (view == null) return;
+        try {
+            Class.forName("android.window.SplashScreenView").getMethod("remove").invoke(view);
+        } catch (Throwable ignored) { }
     }
 
     private void buildFallbackSurface() {
