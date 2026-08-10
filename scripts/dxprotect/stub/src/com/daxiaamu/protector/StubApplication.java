@@ -33,6 +33,7 @@ public final class StubApplication extends Application {
     private Application delegated;
     private byte[] signerSha256;
     private byte[] capability;
+    private Throwable startupFailure;
     private String apkPath;
     private String enginePath;
     private String anchorPath;
@@ -65,12 +66,18 @@ public final class StubApplication extends Application {
             integrityReady = true;
         } catch (Throwable failure) {
             integrityReady = false;
+            startupFailure = failure;
+            suppressPendingProviders();
         }
     }
 
     @Override
     public void onCreate() {
         super.onCreate();
+        if (startupFailure != null) {
+            routeFailure();
+            return;
+        }
         if (delegated != null) {
             try {
                 publishOriginalApplication(getBaseContext(), delegated);
@@ -104,6 +111,22 @@ public final class StubApplication extends Application {
         Intent intent = new Intent(this, GatewayActivity.class);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
         startActivity(intent);
+    }
+
+    private void suppressPendingProviders() {
+        try {
+            Class<?> activityThreadClass = Class.forName("android.app.ActivityThread");
+            Method current = activityThreadClass.getDeclaredMethod("currentActivityThread");
+            current.setAccessible(true);
+            Object activityThread = current.invoke(null);
+            if (activityThread == null) return;
+            Object boundApplication = field(activityThreadClass, "mBoundApplication").get(activityThread);
+            if (boundApplication == null) return;
+            Object providers = field(boundApplication.getClass(), "providers").get(boundApplication);
+            if (providers instanceof List) ((List<?>) providers).clear();
+        } catch (Throwable ignored) {
+            // Failure routing remains best-effort on vendor frameworks with incompatible internals.
+        }
     }
 
     private ClassLoader installPayload(Context context) throws Exception {

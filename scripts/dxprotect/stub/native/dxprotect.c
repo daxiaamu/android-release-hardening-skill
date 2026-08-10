@@ -52,6 +52,7 @@ static void final(sha256_ctx*c,uint8_t out[32]){uint32_t i=c->len;int j;c->data[
 static void hmac_key(const uint8_t*key,const uint8_t*data,size_t n,uint8_t out[32]){uint8_t ip[64],op[64],inner[32];int i;for(i=0;i<64;i++){uint8_t k=i<32?key[i]:0;ip[i]=k^0x36;op[i]=k^0x5c;}sha256_ctx c;init(&c);update(&c,ip,64);update(&c,data,n);final(&c,inner);init(&c);update(&c,op,64);update(&c,inner,32);final(&c,out);memset(inner,0,32);}
 static void hmac(const uint8_t*data,size_t n,uint8_t out[32]){hmac_key(DXP_KEY,data,n,out);}
 static int equal32(const uint8_t*a,const uint8_t*b){uint8_t x=0;int i;for(i=0;i<32;i++)x|=a[i]^b[i];return x==0;}
+static int equal_seal32(const uint8_t*a,const uint8_t*b){const volatile uint8_t*v=(const volatile uint8_t*)b;uint8_t x=0;int i;for(i=0;i<32;i++)x|=a[i]^v[i];return x==0;}
 static uint32_t be32(const uint8_t*p){return ((uint32_t)p[0]<<24)|((uint32_t)p[1]<<16)|((uint32_t)p[2]<<8)|p[3];}
 static uint16_t le16(const uint8_t*p){return (uint16_t)p[0]|((uint16_t)p[1]<<8);}
 static uint32_t le32(const uint8_t*p){return (uint32_t)p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);}
@@ -134,7 +135,7 @@ static int verify_graph_state(JNIEnv*env,jbyteArray signer,jstring apk_path,jstr
     int eok=ep&&hash_sealed(ep,DXP_SELF_SEAL,DXP_PEER_SEAL,ed),aok=an&&hash_sealed(an,DXA_SELF_MARKER,DXA_PEER_MARKER,ad),cok=ap&&apk_cert_sha256(ap,cert),sok=ap&&apk_stub_sha256(ap,stub),bok=ap&&measure_business_files(ap,business);
     memcpy(material+mp,s,32);mp+=32;memcpy(material+mp,ed,32);mp+=32;memcpy(material+mp,ad,32);mp+=32;memcpy(material+mp,cert,32);mp+=32;memcpy(material+mp,stub,32);mp+=32;memcpy(material+mp,business,32);mp+=32;memcpy(material+mp,cap+16,32);mp+=32;
     material[mp++]=(uint8_t)clean;material[mp++]=(uint8_t)eok;material[mp++]=(uint8_t)aok;material[mp++]=(uint8_t)cok;material[mp++]=(uint8_t)sok;material[mp++]=(uint8_t)bok;material[mp++]=(uint8_t)equal32(s,DXP_CERT_SHA256);material[mp++]=(uint8_t)verify_capability(s,cap,48);hmac_key(DXP_KEY,material,mp,graph);
-    int ok=clean&&eok&&aok&&cok&&sok&&bok&&equal32(s,DXP_CERT_SHA256)&&equal32(ed,DXP_SELF_SEAL+16)&&equal32(ad,DXP_PEER_SEAL+16)&&equal32(cert,DXP_CERT_SHA256)&&equal32(stub,DXP_STUB_DEX_SHA256)&&verify_capability(s,cap,48);
+    int ok=clean&&eok&&aok&&cok&&sok&&bok&&equal32(s,DXP_CERT_SHA256)&&equal_seal32(ed,DXP_SELF_SEAL+16)&&equal_seal32(ad,DXP_PEER_SEAL+16)&&equal32(cert,DXP_CERT_SHA256)&&equal32(stub,DXP_STUB_DEX_SHA256)&&verify_capability(s,cap,48);
     if(ep)(*env)->ReleaseStringUTFChars(env,engine_path,ep);if(an)(*env)->ReleaseStringUTFChars(env,anchor_path,an);if(ap)(*env)->ReleaseStringUTFChars(env,apk_path,ap);memset(material,0,sizeof(material));memset(s,0,32);memset(cap,0,48);return ok;
 }
 static int verify_graph(JNIEnv*env,jbyteArray signer,jstring apk_path,jstring engine_path,jstring anchor_path,jbyteArray capability){uint8_t graph[32];int ok=verify_graph_state(env,signer,apk_path,engine_path,anchor_path,capability,graph);memset(graph,0,32);return ok;}
