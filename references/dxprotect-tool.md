@@ -8,7 +8,7 @@ DXProtect 的输入是已经构建完成的单体 APK，输出是重新签名的
 
 ## V8 加固结构
 
-- 原 `classes*.dex` 从 APK 顶层移除，分别加密并认证后放入每构建随机的 assets 路径；API 27+ 使用带原 APK native 搜索路径的 `InMemoryDexClassLoader`。
+- 原 `classes*.dex` 从 APK 顶层移除，分别加密并认证后放入每构建随机的 assets 路径；API 29+ 使用带原 APK native 搜索路径的三参数 `InMemoryDexClassLoader`，API 23–28 使用显式传入 `nativeLibraryDir` 的私有 `codeCacheDir` + `DexClassLoader` 兼容路径。
 - 壳由随机包名、随机类名、随机 JNI 方法名、随机 SO 名、随机元数据键和随机资产路径组成；同一输入连续构建不会产生固定补丁位置。
 - 两个独立 native 库分别持有信任材料并做 SHA-256 自封印/交叉封印；只有两者一致时才签发进程绑定、带随机 nonce 和 HMAC 的短期 capability。
 - 反剥壳份额采用双 SO 拆分：anchor SO 只持有 B 份秘密并根据 challenge/phase/domain 与交叉封印摘要生成片段；engine SO 只持有 A 份秘密，并结合片段、壳 DEX、正式签名和业务 SO 清单生成最终份额。两个秘密不得同时出现在任一 SO。
@@ -52,7 +52,9 @@ python ./tools/protect.py `
 
 ## 兼容性与预检
 
-已覆盖的本地回归包括：多 DEX、自定义 Application 身份恢复、壳 BootstrapProvider、普通 Activity、NativeActivity、自带 JNI/SO、API 27+ 内存加载和原 nativeLibraryDir 继承。
+已覆盖的本地回归包括：多 DEX、自定义 Application 身份恢复、壳 BootstrapProvider、普通 Activity、NativeActivity、自带 JNI/SO、API 29+ 内存加载、API 23–28 文件加载和原 nativeLibraryDir 继承。
+
+DEX 加载 API 边界必须回归 API 26、27、28、29：API 26–28 必须走 `DexClassLoader`，API 29 起才允许调用带 `librarySearchPath` 的三参数 `InMemoryDexClassLoader`。每档都要覆盖自定义 Application、原 APK JNI/SO、冷启动、后台恢复、App Link/快捷方式和完整性失败界面。
 
 Launcher 兼容层会解析普通 `activity` 或 `activity-alias` 的真实目标，将解析后的启动主题、任务/窗口属性和原始 MAIN/LAUNCHER filter 迁移到随机 Gateway。Android 12+ 上 Gateway 会暂留系统 SplashScreen，直到原 Activity 覆盖 Gateway 后再释放；交接使用源 Intent 的完整副本，保留 action、data、categories、授权/载荷 flags、ClipData、selector、source bounds 和 extras，再移除只属于桌面根入口的 `NEW_TASK`、`RESET_TASK_IF_NEEDED`、`NEW_DOCUMENT`、`MULTIPLE_TASK` 与 `TASK_ON_HOME`，防止内部交接被重新投递给 Gateway。多个 MAIN/LAUNCHER 组件当前会明确拒绝构建，避免静默破坏动态图标或 alias 启停语义。
 

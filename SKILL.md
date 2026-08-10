@@ -33,6 +33,7 @@ Do not silently substitute a demo application for artifact-shell mode. Do not tr
 
 - Accept a standalone APK as input and emit a new protected APK plus a machine-readable report; never require or rewrite business source unless the user separately requests source mode.
 - Preserve original native libraries and ABI coverage. Ensure the in-memory/DexClassLoader native search path includes the original `nativeLibraryDir`.
+- Gate the three-argument `InMemoryDexClassLoader(ByteBuffer[], librarySearchPath, parent)` at API 29. Use private `codeCacheDir` plus `DexClassLoader` with the original `nativeLibraryDir` on API 23-28; never route API 27/28 through the three-argument constructor.
 - Restore a custom original Application as the framework-visible identity before business providers/activities rely on it; validate this with a fixture that casts `getApplication()` to the original type.
 - Preserve the resolved launcher theme, task/window attributes, and exact MAIN/LAUNCHER filter on the shell gateway. On Android 12+, retain the system splash until the original Activity covers the gateway; clone the complete source Intent rather than rebuilding only action/extras, then strip launcher-only root-task routing flags for the internal handoff.
 - Resolve `activity-alias` launchers through `targetActivity`. Reject multiple launcher components until their enable/disable and dynamic-icon semantics can be preserved; never silently collapse them to one entry.

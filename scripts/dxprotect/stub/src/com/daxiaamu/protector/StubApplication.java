@@ -122,7 +122,7 @@ public final class StubApplication extends Application {
         }
         Arrays.sort(assets);
 
-        if (Build.VERSION.SDK_INT >= 27) {
+        if (Build.VERSION.SDK_INT >= 29) {
             List<ByteBuffer> buffers = new ArrayList<ByteBuffer>();
             for (String asset : assets) {
                 if (!asset.endsWith(".bin")) continue;
