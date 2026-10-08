@@ -38,20 +38,34 @@ public final class StubApplication extends Application {
     private String enginePath;
     private String anchorPath;
     private final Handler watchdog = new Handler(Looper.getMainLooper());
+    private final java.util.concurrent.ExecutorService signatureWorker =
+            java.util.concurrent.Executors.newSingleThreadExecutor();
     private final Runnable watchdogCheck = new Runnable() {
         @Override public void run() {
             if (!integrityReady) return;
-            try {
-                byte[] fresh = AnchorBridge.__DXP_ATTEST_METHOD__(signerSha256, enginePath, anchorPath);
-                if (fresh == null || !NativeBridge.__DXP_RECHECK_METHOD__(signerSha256, apkPath, enginePath, anchorPath, fresh)) {
-                    throw new SecurityException("watchdog verification failed");
+            signatureWorker.execute(new Runnable() {
+                @Override public void run() {
+                    try {
+                        ApkSignatureVerifier.verify(apkPath, BuildProfile.SIGNER_SHA256);
+                    } catch (Throwable failure) {
+                        watchdog.post(new Runnable() { @Override public void run() { routeFailure(); } });
+                        return;
+                    }
+                    watchdog.post(new Runnable() {
+                        @Override public void run() {
+                            if (!integrityReady) return;
+                            try {
+                                byte[] fresh = AnchorBridge.__DXP_ATTEST_METHOD__(signerSha256, enginePath, anchorPath);
+                                if (fresh == null || !NativeBridge.__DXP_RECHECK_METHOD__(signerSha256, apkPath, enginePath, anchorPath, fresh))
+                                    throw new SecurityException("watchdog verification failed");
+                                if (capability != null) Arrays.fill(capability, (byte) 0);
+                                capability = fresh;
+                                watchdog.postDelayed(watchdogCheck, BuildProfile.WATCHDOG_MS);
+                            } catch (Throwable failure) { routeFailure(); }
+                        }
+                    });
                 }
-                if (capability != null) Arrays.fill(capability, (byte) 0);
-                capability = fresh;
-                watchdog.postDelayed(this, BuildProfile.WATCHDOG_MS);
-            } catch (Throwable failure) {
-                routeFailure();
-            }
+            });
         }
     };
 
@@ -67,6 +81,7 @@ public final class StubApplication extends Application {
         } catch (Throwable failure) {
             integrityReady = false;
             startupFailure = failure;
+            android.util.Log.e("DXProtect", "Startup restoration failed: " + failure.getClass().getSimpleName());
             suppressPendingProviders();
         }
     }
@@ -124,8 +139,9 @@ public final class StubApplication extends Application {
             if (boundApplication == null) return;
             Object providers = field(boundApplication.getClass(), "providers").get(boundApplication);
             if (providers instanceof List) ((List<?>) providers).clear();
-        } catch (Throwable ignored) {
-            // Failure routing remains best-effort on vendor frameworks with incompatible internals.
+        } catch (Throwable failure) {
+            android.util.Log.e("DXProtect", "Provider suppression failed: " + failure.getClass().getSimpleName());
+            if (startupFailure != null) startupFailure.addSuppressed(failure);
         }
     }
 
@@ -133,6 +149,9 @@ public final class StubApplication extends Application {
         signerSha256 = currentSignerSha256(context);
         ApplicationInfo info = context.getApplicationInfo();
         apkPath = info.sourceDir;
+        ApkSignatureVerifier.verify(apkPath, BuildProfile.SIGNER_SHA256);
+        if (!MessageDigest.isEqual(signerSha256, BuildProfile.SIGNER_SHA256))
+            throw new SecurityException("installed signer mismatch");
         enginePath = new File(info.nativeLibraryDir, "lib" + BuildProfile.SO_NAME + ".so").getAbsolutePath();
         anchorPath = new File(info.nativeLibraryDir, "lib" + BuildProfile.ANCHOR_SO_NAME + ".so").getAbsolutePath();
         capability = AnchorBridge.__DXP_ATTEST_METHOD__(signerSha256, enginePath, anchorPath);
@@ -147,22 +166,33 @@ public final class StubApplication extends Application {
 
         if (Build.VERSION.SDK_INT >= 29) {
             List<ByteBuffer> buffers = new ArrayList<ByteBuffer>();
-            for (String asset : assets) {
-                if (!asset.endsWith(".bin")) continue;
-                byte[] clear = decryptAsset(context, asset);
-                ByteBuffer buffer = ByteBuffer.allocateDirect(clear.length);
-                buffer.put(clear);
-                buffer.flip();
-                buffers.add(buffer.asReadOnlyBuffer());
-                Arrays.fill(clear, (byte) 0);
+            boolean published = false;
+            try {
+                for (String asset : assets) {
+                    if (!asset.endsWith(".bin")) continue;
+                    byte[] clear = decryptAsset(context, asset);
+                    try {
+                        ByteBuffer buffer = ByteBuffer.allocateDirect(clear.length);
+                        buffers.add(buffer);
+                        buffer.put(clear);
+                        buffer.flip();
+                    } finally { Arrays.fill(clear, (byte) 0); }
+                }
+                if (buffers.isEmpty()) throw new IllegalStateException("no DEX payload found");
+                ClassLoader loader = new InMemoryDexClassLoader(
+                        buffers.toArray(new ByteBuffer[buffers.size()]),
+                        info.nativeLibraryDir,
+                        context.getClassLoader());
+                publishClassLoader(context, loader);
+                published = true;
+                return loader;
+            } finally {
+                // Successful loaders may retain direct DEX storage: do not erase it.
+                if (!published) for (ByteBuffer buffer : buffers) {
+                    buffer.clear();
+                    while (buffer.hasRemaining()) buffer.put((byte) 0);
+                }
             }
-            if (buffers.isEmpty()) throw new IllegalStateException("no DEX payload found");
-            ClassLoader loader = new InMemoryDexClassLoader(
-                    buffers.toArray(new ByteBuffer[buffers.size()]),
-                    info.nativeLibraryDir,
-                    context.getClassLoader());
-            publishClassLoader(context, loader);
-            return loader;
         }
 
         File root = new File(context.getCodeCacheDir(), "dxp-" + safe(buildId));
@@ -175,17 +205,27 @@ public final class StubApplication extends Application {
             byte[] clear = decryptAsset(context, asset);
             File dex = new File(root, asset.substring(0, asset.length() - 4) + ".dex");
             File temp = new File(root, dex.getName() + ".tmp");
-            FileOutputStream output = new FileOutputStream(temp, false);
+            boolean written = false;
             try {
-                output.write(clear);
-                output.getFD().sync();
+                try (FileOutputStream output = new FileOutputStream(temp, false)) {
+                    output.write(clear);
+                    output.getFD().sync();
+                }
+                written = true;
             } finally {
-                output.close();
                 Arrays.fill(clear, (byte) 0);
+                // Never retain a partially written plaintext DEX after an I/O failure.
+                if (!written && temp.exists() && !temp.delete())
+                    android.util.Log.e("DXProtect", "Partial payload cleanup failed");
             }
-            if (dex.exists() && !dex.delete()) throw new IllegalStateException("cannot replace DEX");
-            if (!temp.setReadOnly()) throw new IllegalStateException("cannot seal DEX permissions");
-            if (!temp.renameTo(dex)) throw new IllegalStateException("cannot publish DEX");
+            try {
+                if (dex.exists() && !dex.delete()) throw new IllegalStateException("cannot replace DEX");
+                if (!temp.setReadOnly()) throw new IllegalStateException("cannot seal DEX permissions");
+                if (!temp.renameTo(dex)) throw new IllegalStateException("cannot publish DEX");
+            } finally {
+                if (temp.exists() && !temp.delete())
+                    android.util.Log.e("DXProtect", "Unpublished payload cleanup failed");
+            }
             if (dexPath.length() > 0) dexPath.append(File.pathSeparatorChar);
             dexPath.append(dex.getAbsolutePath());
         }
@@ -208,11 +248,14 @@ public final class StubApplication extends Application {
     private byte[] decryptAsset(Context context, String asset) throws Exception {
         byte[] sealed = readAll(context, BuildProfile.ASSET_DIR + "/" + asset);
         ApplicationInfo info = context.getApplicationInfo();
-        byte[] clear = NativeBridge.__DXP_DECRYPT_METHOD__(sealed, signerSha256, info.sourceDir,
-                enginePath, anchorPath, capability);
-        Arrays.fill(sealed, (byte) 0);
+        byte[] clear;
+        try {
+            clear = NativeBridge.__DXP_DECRYPT_METHOD__(sealed, signerSha256, info.sourceDir,
+                    enginePath, anchorPath, capability);
+        } finally { Arrays.fill(sealed, (byte) 0); }
         if (clear == null || clear.length < 112 || clear[0] != 'd' || clear[1] != 'e' || clear[2] != 'x') {
-            throw new SecurityException("payload authentication failed: " + asset);
+            if (clear != null) Arrays.fill(clear, (byte) 0);
+            throw new SecurityException("payload authentication failed");
         }
         return clear;
     }

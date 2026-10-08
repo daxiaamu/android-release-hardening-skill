@@ -8,13 +8,15 @@ DXProtect 的输入是已经构建完成的单体 APK，输出是重新签名的
 
 ## V8 加固结构
 
+2026-10-08 起默认使用 R8 优化壳，并增加临时明文清理与最终 APK 泄漏/ELF 门禁。参数、实测及安全边界见 [代码保护增强](code-protection.md)。R8 仅处理壳，不自动修改业务 DEX；需要旧链路时明确传入 `--shell-optimizer d8`。
+
 - 原 `classes*.dex` 从 APK 顶层移除，分别加密并认证后放入每构建随机的 assets 路径；API 29+ 使用带原 APK native 搜索路径的三参数 `InMemoryDexClassLoader`，API 23–28 使用显式传入 `nativeLibraryDir` 的私有 `codeCacheDir` + `DexClassLoader` 兼容路径。
 - 壳由随机包名、随机类名、随机 JNI 方法名、随机 SO 名、随机元数据键和随机资产路径组成；同一输入连续构建不会产生固定补丁位置。
 - 两个独立 native 库分别持有信任材料并做 SHA-256 自封印/交叉封印；只有两者一致时才签发进程绑定、带随机 nonce 和 HMAC 的短期 capability。
 - 反剥壳份额采用双 SO 拆分：anchor SO 只持有 B 份秘密并根据 challenge/phase/domain 与交叉封印摘要生成片段；engine SO 只持有 A 份秘密，并结合片段、壳 DEX、正式签名和业务 SO 清单生成最终份额。两个秘密不得同时出现在任一 SO。
 - 完整性图生成 32 字节 graph state，而不是只给出通过/失败。实际 signer、双壳 SO、壳 DEX、全部业务 SO、capability 和运行时状态共同进入该 state，并继续进入份额密钥和多轮输出。只把检查函数改成返回成功而不生成正确 state 时，业务输出必须失配。
 - 集成了 `com.daxiaamu.shellbinding.OuterShare` 窄接口的业务引擎，应在初态、迭代轮、最终 Proof、Scene/View Seal 与 watchdog 中消费至少三组不同 domain 的份额。固定值、空实现或删除整个壳均不得保留正式输出。
-- 签名通过 `PackageManager/SigningInfo` 与 native 直接解析已安装 APK v2/v3 Signing Block 两条路径交叉校验。
+- 签名通过 `PackageManager/SigningInfo` 与 native 直接解析已安装 APK v2/v3 Signing Block 两条路径交叉校验；业务解密前增加独立 APK v2 密码学验签，固定构建证书指纹并重算签名覆盖区摘要，周期验证使用后台线程。范围与实测记录见 [APK 密码学验签](apk-cryptographic-verification.md)，不将未知 Signing Block 条目或未实测的 Android 版本称为已保护/已通过。
 - JNI 仅导出 `JNI_OnLoad`，通过 `RegisterNatives` 绑定每构建随机方法；类名、方法名、JNI 签名和运行时探针字符串以 volatile 异或数组保存，避免编译器常量折叠重新泄露明文。
 - native 从已安装 APK 中直接定位、解压并校验壳 `classes.dex`，将 Java 壳修改纳入交叉校验图。
 - 构建时枚举输入 APK 的全部原始业务 SO，为每个 `lib/<abi>/*.so` 生成 SHA-256 清单；entry 名以每构建随机异或数组保存。启动、解密与 watchdog 从已安装 APK 重新解压测量全部业务 SO，避免只修改内层 native 后重新计算内层 self-seal。

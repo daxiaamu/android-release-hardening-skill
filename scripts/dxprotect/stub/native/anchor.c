@@ -12,19 +12,20 @@ __attribute__((used,section(".dxaseal"))) static const uint8_t DXA_SELF_SEAL[48]
 __attribute__((used,section(".dxapeer"))) static const uint8_t DXA_PEER_SEAL[48]={DXP_ANCHOR_PEER_MARKER_BYTES};
 static const uint8_t DXE_SELF_MARKER[16]={DXP_ENGINE_SELF_MARKER_BYTES};
 static const uint8_t DXE_PEER_MARKER[16]={DXP_ENGINE_PEER_MARKER_BYTES};
+static void secure_zero(void *p,size_t n){volatile uint8_t *v=(volatile uint8_t*)p;while(n--)*v++=0;}
 static void reveal(char*out,const volatile uint8_t*in,size_t n,uint8_t mask){size_t i;for(i=0;i<n;i++)out[i]=(char)(in[i]^mask);out[n]=0;}
 static int contains_bytes(const char*b,size_t n,const char*q,size_t m){size_t i;if(!m||m>n)return 0;for(i=0;i+m<=n;i++)if(!memcmp(b+i,q,m))return 1;return 0;}
 static int runtime_clean(void){
     if(DXP_RUNTIME_GUARD==0)return 1;
     char path[DXP_RT_STATUS_PATH_LEN+1],key[DXP_RT_TRACER_KEY_LEN+1],status[4096];ssize_t n;int fd;
     reveal(path,DXP_RT_STATUS_PATH_X,DXP_RT_STATUS_PATH_LEN,DXP_RT_STATUS_PATH_MASK);reveal(key,DXP_RT_TRACER_KEY_X,DXP_RT_TRACER_KEY_LEN,DXP_RT_TRACER_KEY_MASK);
-    fd=open(path,O_RDONLY|O_CLOEXEC);memset(path,0,sizeof(path));if(fd<0)return 0;n=read(fd,status,sizeof(status));close(fd);if(n<=0)return 0;
-    char*p=0;size_t i;for(i=0;i+DXP_RT_TRACER_KEY_LEN<=(size_t)n;i++)if(!memcmp(status+i,key,DXP_RT_TRACER_KEY_LEN)){p=status+i+DXP_RT_TRACER_KEY_LEN;break;}memset(key,0,sizeof(key));if(!p)return 0;while(p<status+n&&(*p==' '||*p=='\t'))p++;if(p>=status+n||(*p>='1'&&*p<='9'))return 0;
+    fd=open(path,O_RDONLY|O_CLOEXEC);secure_zero(path,sizeof(path));if(fd<0)return 0;n=read(fd,status,sizeof(status));close(fd);if(n<=0)return 0;
+    char*p=0;size_t i;for(i=0;i+DXP_RT_TRACER_KEY_LEN<=(size_t)n;i++)if(!memcmp(status+i,key,DXP_RT_TRACER_KEY_LEN)){p=status+i+DXP_RT_TRACER_KEY_LEN;break;}secure_zero(key,sizeof(key));if(!p)return 0;while(p<status+n&&(*p==' '||*p=='\t'))p++;if(p>=status+n||(*p>='1'&&*p<='9'))return 0;
     if(DXP_RUNTIME_GUARD<2)return 1;
-    char maps_path[DXP_RT_MAPS_PATH_LEN+1];reveal(maps_path,DXP_RT_MAPS_PATH_X,DXP_RT_MAPS_PATH_LEN,DXP_RT_MAPS_PATH_MASK);fd=open(maps_path,O_RDONLY|O_CLOEXEC);memset(maps_path,0,sizeof(maps_path));if(fd<0)return 0;
+    char maps_path[DXP_RT_MAPS_PATH_LEN+1];reveal(maps_path,DXP_RT_MAPS_PATH_X,DXP_RT_MAPS_PATH_LEN,DXP_RT_MAPS_PATH_MASK);fd=open(maps_path,O_RDONLY|O_CLOEXEC);secure_zero(maps_path,sizeof(maps_path));if(fd<0)return 0;
     size_t cap=1048576,used=0;char*maps=malloc(cap);if(!maps){close(fd);return 0;}while(used<cap&&(n=read(fd,maps+used,cap-used))>0)used+=(size_t)n;close(fd);if(used==cap){free(maps);return 0;}
     const volatile uint8_t*xs[5]={DXP_RT_MARKER_1_X,DXP_RT_MARKER_2_X,DXP_RT_MARKER_3_X,DXP_RT_MARKER_4_X,DXP_RT_MARKER_5_X};const size_t ls[5]={DXP_RT_MARKER_1_LEN,DXP_RT_MARKER_2_LEN,DXP_RT_MARKER_3_LEN,DXP_RT_MARKER_4_LEN,DXP_RT_MARKER_5_LEN};const uint8_t ms[5]={DXP_RT_MARKER_1_MASK,DXP_RT_MARKER_2_MASK,DXP_RT_MARKER_3_MASK,DXP_RT_MARKER_4_MASK,DXP_RT_MARKER_5_MASK};
-    int clean=1;for(i=0;i<5;i++){char marker[32];reveal(marker,xs[i],ls[i],ms[i]);if(contains_bytes(maps,used,marker,ls[i]))clean=0;memset(marker,0,sizeof(marker));if(!clean)break;}memset(maps,0,used);free(maps);return clean;
+    int clean=1;for(i=0;i<5;i++){char marker[32];reveal(marker,xs[i],ls[i],ms[i]);if(contains_bytes(maps,used,marker,ls[i]))clean=0;secure_zero(marker,sizeof(marker));if(!clean)break;}secure_zero(maps,used);free(maps);return clean;
 }
 
 typedef struct{uint8_t data[64];uint32_t len;uint64_t bits;uint32_t state[8];}sha256_ctx;
@@ -37,11 +38,11 @@ static void sf(sha256_ctx*c,uint8_t o[32]){uint32_t i=c->len;int j;c->data[i++]=
 static int eq(const uint8_t*a,const uint8_t*b){uint8_t x=0;int i;for(i=0;i<32;i++)x|=a[i]^b[i];return x==0;}
 static int eq_seal(const uint8_t*a,const uint8_t*b){const volatile uint8_t*v=(const volatile uint8_t*)b;uint8_t x=0;int i;for(i=0;i<32;i++)x|=a[i]^v[i];return x==0;}
 static int ra(int fd,uint64_t o,void*v,size_t n){uint8_t*p=v;size_t d=0;while(d<n){ssize_t r=pread(fd,p+d,n-d,(off_t)(o+d));if(r<=0)return 0;d+=(size_t)r;}return 1;}
-static int hash_sealed(const char*path,const uint8_t*m1,const uint8_t*m2,uint8_t out[32]){int fd=-1,ok=0;struct stat st;uint8_t*b=0;size_t i,p1=(size_t)-1,p2=(size_t)-1;sha256_ctx c;if(!path||(fd=open(path,O_RDONLY|O_CLOEXEC))<0||fstat(fd,&st)||st.st_size<96||st.st_size>67108864)goto done;b=malloc((size_t)st.st_size);if(!b||!ra(fd,0,b,(size_t)st.st_size))goto done;for(i=0;i+48<=(size_t)st.st_size;i++){if(!memcmp(b+i,m1,16)){if(p1!=(size_t)-1)goto done;p1=i;}if(!memcmp(b+i,m2,16)){if(p2!=(size_t)-1)goto done;p2=i;}}if(p1==(size_t)-1||p2==(size_t)-1)goto done;memset(b+p1+16,0,32);memset(b+p2+16,0,32);si(&c);su(&c,b,(size_t)st.st_size);sf(&c,out);ok=1;done:if(b){memset(b,0,(size_t)st.st_size);free(b);}if(fd>=0)close(fd);return ok;}
-static void hm_key(const uint8_t key[32],const uint8_t*d,size_t n,uint8_t o[32]){uint8_t ip[64],op[64],in[32];int i;sha256_ctx c;for(i=0;i<64;i++){uint8_t k=i<32?key[i]:0;ip[i]=k^0x36;op[i]=k^0x5c;}si(&c);su(&c,ip,64);su(&c,d,n);sf(&c,in);si(&c);su(&c,op,64);su(&c,in,32);sf(&c,o);memset(ip,0,64);memset(op,0,64);memset(in,0,32);}
+static int hash_sealed(const char*path,const uint8_t*m1,const uint8_t*m2,uint8_t out[32]){int fd=-1,ok=0;struct stat st;uint8_t*b=0;size_t i,p1=(size_t)-1,p2=(size_t)-1;sha256_ctx c;if(!path||(fd=open(path,O_RDONLY|O_CLOEXEC))<0||fstat(fd,&st)||st.st_size<96||st.st_size>67108864)goto done;b=malloc((size_t)st.st_size);if(!b||!ra(fd,0,b,(size_t)st.st_size))goto done;for(i=0;i+48<=(size_t)st.st_size;i++){if(!memcmp(b+i,m1,16)){if(p1!=(size_t)-1)goto done;p1=i;}if(!memcmp(b+i,m2,16)){if(p2!=(size_t)-1)goto done;p2=i;}}if(p1==(size_t)-1||p2==(size_t)-1)goto done;secure_zero(b+p1+16,32);secure_zero(b+p2+16,32);si(&c);su(&c,b,(size_t)st.st_size);sf(&c,out);ok=1;done:if(b){secure_zero(b,(size_t)st.st_size);free(b);}if(fd>=0)close(fd);return ok;}
+static void hm_key(const uint8_t key[32],const uint8_t*d,size_t n,uint8_t o[32]){uint8_t ip[64],op[64],in[32];int i;sha256_ctx c;for(i=0;i<64;i++){uint8_t k=i<32?key[i]:0;ip[i]=k^0x36;op[i]=k^0x5c;}si(&c);su(&c,ip,64);su(&c,d,n);sf(&c,in);si(&c);su(&c,op,64);su(&c,in,32);sf(&c,o);secure_zero(ip,64);secure_zero(op,64);secure_zero(in,32);secure_zero(&c,sizeof(c));}
 static void hm(const uint8_t*d,size_t n,uint8_t o[32]){hm_key(DXP_ANCHOR_KEY,d,n,o);}
 
-static jbyteArray native_attest(JNIEnv*e,jclass t,jbyteArray signer,jstring engine,jstring anchor){(void)t;if(!signer||!engine||!anchor||(*e)->GetArrayLength(e,signer)!=32)return 0;uint8_t s[32],ed[32],ad[32],msg[52],tag[32];(*e)->GetByteArrayRegion(e,signer,0,32,(jbyte*)s);if(!eq(s,DXP_CERT_SHA256))return 0;const char*ep=(*e)->GetStringUTFChars(e,engine,0),*ap=(*e)->GetStringUTFChars(e,anchor,0);int ok=ep&&ap&&hash_sealed(ep,DXE_SELF_MARKER,DXE_PEER_MARKER,ed)&&eq_seal(ed,DXA_PEER_SEAL+16)&&hash_sealed(ap,DXA_SELF_SEAL,DXA_PEER_SEAL,ad)&&eq_seal(ad,DXA_SELF_SEAL+16);if(ep)(*e)->ReleaseStringUTFChars(e,engine,ep);if(ap)(*e)->ReleaseStringUTFChars(e,anchor,ap);if(!ok)return 0;int fd=open("/dev/urandom",O_RDONLY|O_CLOEXEC);if(fd<0||read(fd,msg+32,16)!=16){if(fd>=0)close(fd);return 0;}close(fd);memcpy(msg,s,32);uint32_t pid=(uint32_t)getpid();msg[48]=pid>>24;msg[49]=pid>>16;msg[50]=pid>>8;msg[51]=pid;hm(msg,52,tag);jbyteArray out=(*e)->NewByteArray(e,48);uint8_t cap[48];memcpy(cap,msg+32,16);memcpy(cap+16,tag,32);(*e)->SetByteArrayRegion(e,out,0,48,(jbyte*)cap);memset(cap,0,48);memset(msg,0,52);return out;}
+static jbyteArray native_attest(JNIEnv*e,jclass t,jbyteArray signer,jstring engine,jstring anchor){(void)t;if(!signer||!engine||!anchor||(*e)->GetArrayLength(e,signer)!=32)return 0;uint8_t s[32],ed[32],ad[32],msg[52],tag[32];(*e)->GetByteArrayRegion(e,signer,0,32,(jbyte*)s);if(!eq(s,DXP_CERT_SHA256))return 0;const char*ep=(*e)->GetStringUTFChars(e,engine,0),*ap=(*e)->GetStringUTFChars(e,anchor,0);int ok=ep&&ap&&hash_sealed(ep,DXE_SELF_MARKER,DXE_PEER_MARKER,ed)&&eq_seal(ed,DXA_PEER_SEAL+16)&&hash_sealed(ap,DXA_SELF_SEAL,DXA_PEER_SEAL,ad)&&eq_seal(ad,DXA_SELF_SEAL+16);if(ep)(*e)->ReleaseStringUTFChars(e,engine,ep);if(ap)(*e)->ReleaseStringUTFChars(e,anchor,ap);if(!ok)return 0;int fd=open("/dev/urandom",O_RDONLY|O_CLOEXEC);if(fd<0||read(fd,msg+32,16)!=16){if(fd>=0)close(fd);return 0;}close(fd);memcpy(msg,s,32);uint32_t pid=(uint32_t)getpid();msg[48]=pid>>24;msg[49]=pid>>16;msg[50]=pid>>8;msg[51]=pid;hm(msg,52,tag);jbyteArray out=(*e)->NewByteArray(e,48);uint8_t cap[48];memcpy(cap,msg+32,16);memcpy(cap+16,tag,32);if(out)(*e)->SetByteArrayRegion(e,out,0,48,(jbyte*)cap);secure_zero(cap,48);secure_zero(msg,52);secure_zero(tag,32);return out;}
 
 static jbyteArray native_fragment(JNIEnv*e,jclass t,jbyteArray signer,jstring engine,jstring anchor,jstring challenge,jint phase,jint domain){
     (void)t;if(!runtime_clean()||!signer||!engine||!anchor||!challenge||phase<0||phase>3||domain<0||domain>7||(*e)->GetArrayLength(e,signer)!=32)return 0;
@@ -59,7 +60,7 @@ static jbyteArray native_fragment(JNIEnv*e,jclass t,jbyteArray signer,jstring en
     }
     if(ep)(*e)->ReleaseStringUTFChars(e,engine,ep);if(ap)(*e)->ReleaseStringUTFChars(e,anchor,ap);if(raw)(*e)->ReleaseStringUTFChars(e,challenge,raw);
     jbyteArray result=ok?(*e)->NewByteArray(e,32):0;if(result)(*e)->SetByteArrayRegion(e,result,0,32,(jbyte*)out);
-    memset(s,0,32);memset(ed,0,32);memset(ad,0,32);memset(key,0,32);memset(msg,0,sizeof(msg));memset(out,0,32);memset(round,0,sizeof(round));return result;
+    secure_zero(s,32);secure_zero(ed,32);secure_zero(ad,32);secure_zero(key,32);secure_zero(msg,sizeof(msg));secure_zero(out,32);secure_zero(round,sizeof(round));return result;
 }
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM*vm,void*reserved){
@@ -72,6 +73,6 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM*vm,void*reserved){
     reveal(fsig,DXP_FRAGMENT_SIG_X,DXP_FRAGMENT_SIG_LEN,DXP_FRAGMENT_SIG_MASK);
     jclass c=(*e)->FindClass(e,cls);if(!c)return JNI_ERR;
     JNINativeMethod m[2]={{name,sig,(void*)native_attest},{fname,fsig,(void*)native_fragment}};int ok=(*e)->RegisterNatives(e,c,m,2)==0;
-    memset(cls,0,sizeof(cls));memset(name,0,sizeof(name));memset(sig,0,sizeof(sig));memset(fname,0,sizeof(fname));memset(fsig,0,sizeof(fsig));
+    secure_zero(cls,sizeof(cls));secure_zero(name,sizeof(name));secure_zero(sig,sizeof(sig));secure_zero(fname,sizeof(fname));secure_zero(fsig,sizeof(fsig));
     return ok?JNI_VERSION_1_6:JNI_ERR;
 }

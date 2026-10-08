@@ -12,5 +12,6 @@
   "work_root": "D:/dxprotect-work",
   "abis": "auto",
   "min_api": 23,
-  "runtime_guard": "strict"
+  "runtime_guard": "strict",
+  "shell_optimizer": "r8"
 }

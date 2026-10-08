@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Optional
 import xml.etree.ElementTree as ET
 import copy
+from release_surface import audit_apk
 
 ANDROID = "http://schemas.android.com/apk/res/android"
 ET.register_namespace("android", ANDROID)
@@ -378,7 +379,8 @@ def compile_stub(work: Path, key: bytes, cert_sha256: bytes, profile: dict, abis
     shutil.copytree(ROOT / "stub" / "src", source_root)
     profile_java = source_root / "com" / "daxiaamu" / "protector" / "BuildProfile.java"
     text = profile_java.read_text(encoding="utf-8")
-    replacements = {"__DXP_SO_NAME__": profile["so_name"], "__DXP_ANCHOR_SO_NAME__": profile["anchor_so_name"],
+    replacements = {"__DXP_CERT_BYTES__": ",".join(f"(byte)0x{x:02X}" for x in cert_sha256),
+                    "__DXP_SO_NAME__": profile["so_name"], "__DXP_ANCHOR_SO_NAME__": profile["anchor_so_name"],
                     "__DXP_WATCHDOG_MS__": str(profile["watchdog_ms"]), "__DXP_ASSET_DIR__": profile["asset_dir"],
                     "__DXP_META_APP__": profile["meta_app"], "__DXP_META_BUILD__": profile["meta_build"],
                     "__DXP_META_LAUNCHER__": profile["meta_launcher"], "__DXP_FAILURE_CODE__": profile["failure_code"]}
@@ -411,16 +413,24 @@ def compile_stub(work: Path, key: bytes, cert_sha256: bytes, profile: dict, abis
     if D8_JAVA_HOME:
         d8_env["JAVA_HOME"] = str(D8_JAVA_HOME); d8_env["PATH"] = str(D8_JAVA_HOME / "bin") + os.pathsep + d8_env.get("PATH", "")
     d8 = BT / ("d8.bat" if os.name == "nt" else "d8")
-    try:
-        run([d8, "--release", "--min-api", str(min_api), "--lib", ANDROID_JAR, "--output", dex, jar], env=d8_env)
-    except RuntimeError:
-        # Build-tools 30.0.3 D8 can crash internally on otherwise valid Java 8
-        # class graphs. The colocated legacy dx compiler is a deterministic
-        # compatibility fallback for the small bootstrap DEX.
-        dx = BT / ("dx.bat" if os.name == "nt" else "dx")
-        if not dx.exists():
-            raise
-        run([dx, "--dex", f"--output={dex / 'classes.dex'}", jar], env=d8_env)
+    if profile.get("shell_optimizer", "r8") == "r8":
+        # Preserve manifest entrypoints, dynamically registered JNI names, and the
+        # fixed business facade. Other helper classes remain eligible for R8.
+        rules = work / "shell-r8.pro"
+        keep_classes = [profile[x] for x in ("stub_class", "gateway_class", "bootstrap_class",
+                                             "engine_bridge_class", "anchor_bridge_class")]
+        rules.write_text("\n".join(
+            "-keep,allowoptimization class " + profile["java_package"] + "." + name + " { *; }"
+            for name in keep_classes) +
+            "\n-keep class com.daxiaamu.shellbinding.OuterShare { public static byte[] share(java.lang.String,int,int); }\n"
+            "-renamesourcefileattribute Source\n", encoding="utf-8")
+        runtime_java = executable("java", D8_JAVA_HOME) or JAVA
+        run([runtime_java, "-cp", BT / "lib/d8.jar", "com.android.tools.r8.R8",
+             "--release", "--min-api", str(min_api), "--lib", ANDROID_JAR,
+             "--pg-conf", rules, "--pg-map-output", work / "shell-mapping.txt",
+             "--output", dex, jar], env=d8_env)
+    else:
+        compile_d8_compat(d8, dex, jar, min_api, d8_env)
     stub_digest = hashlib.sha256((dex / "classes.dex").read_bytes()).digest()
     stub_digest_text = ",".join(f"0x{x:02X}" for x in stub_digest)
     with (gen / "generated_key.h").open("a", encoding="ascii") as header:
@@ -440,6 +450,18 @@ def compile_stub(work: Path, key: bytes, cert_sha256: bytes, profile: dict, abis
         patch_cross_seals(so_path, anchor_path, markers[:2], markers[2:])
     return dex / "classes.dex", native, stub_digest.hex().upper()
 
+def compile_d8_compat(d8, dex, jar, min_api, d8_env):
+    try:
+        run([d8, "--release", "--min-api", str(min_api), "--lib", ANDROID_JAR, "--output", dex, jar], env=d8_env)
+    except RuntimeError:
+        # Build-tools 30.0.3 D8 can crash internally on otherwise valid Java 8
+        # class graphs. The colocated legacy dx compiler is a deterministic
+        # compatibility fallback for the small bootstrap DEX.
+        dx = BT / ("dx.bat" if os.name == "nt" else "dx")
+        if not dx.exists():
+            raise
+        run([dx, "--dex", f"--output={dex / 'classes.dex'}", jar], env=d8_env)
+
 def main():
     pre = argparse.ArgumentParser(add_help=False); pre.add_argument("--config", type=Path)
     known, _ = pre.parse_known_args(); defaults = {}
@@ -457,6 +479,8 @@ def main():
     ap.add_argument("--abis", default="auto", help="auto or comma-separated arm64-v8a,armeabi-v7a,x86,x86_64")
     ap.add_argument("--min-api", type=int, default=23)
     ap.add_argument("--runtime-guard", choices=("off", "tracer", "strict"), default="strict")
+    ap.add_argument("--shell-optimizer", choices=("r8", "d8"), default="r8")
+    ap.add_argument("--shell-mapping-output", type=Path, help="Private external mapping path; never package or commit it")
     ap.add_argument("--keep-work", action="store_true")
     ap.set_defaults(**defaults)
     args = ap.parse_args()
@@ -527,6 +551,7 @@ def main():
                    "fragment_method": "f" + secrets.token_hex(5),
                    "business_share_method": "b" + secrets.token_hex(5)}
         profile["runtime_guard"] = args.runtime_guard
+        profile["shell_optimizer"] = args.shell_optimizer
         profile["runtime_guard_level"] = {"off": 0, "tracer": 1, "strict": 2}[args.runtime_guard]
         profile["stub_fqcn"] = java_package + "." + profile["stub_class"]
         profile["gateway_fqcn"] = java_package + "." + profile["gateway_class"]
@@ -554,6 +579,15 @@ def main():
         verify = run([BT / "apksigner.bat", "verify", "--verbose", "--print-certs", signed], quiet=True)
         output_structure = verify_output_structure(
             signed, profile, abis, len(dex_files), stub_dex_sha256, business_native_manifest)
+        release_surface = audit_apk(signed, profile, NDK_BIN, work)
+        if args.shell_mapping_output:
+            if args.shell_optimizer != "r8": raise RuntimeError("mapping export requires R8")
+            forbidden_mapping_targets = (args.input, args.output, args.keystore,
+                                         args.output.with_suffix(args.output.suffix + ".dxprotect.json"))
+            if args.shell_mapping_output.resolve() in {x.resolve() for x in forbidden_mapping_targets}:
+                raise RuntimeError("mapping path must not overwrite input, APK, keystore or report")
+            args.shell_mapping_output.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(work / "shell-mapping.txt", args.shell_mapping_output)
         publish_temp = args.output.with_name("." + args.output.name + ".tmp-" + secrets.token_hex(4))
         shutil.copy2(signed, publish_temp)
         os.replace(publish_temp, args.output)
@@ -568,6 +602,11 @@ def main():
             "compatibility_preflight": compatibility,
             "launcher_handoff": "resolved launcher theme/task attributes + exact launcher filter + Intent payload/grant clone with launcher root-task flag translation + API31 retained splash until original Activity covers gateway",
             "output_structure": output_structure,
+            "code_protection": {"shell_optimizer": args.shell_optimizer,
+                                "business_dex_transformed": False,
+                                "mapping_retained": args.shell_optimizer == "r8" and bool(args.shell_mapping_output or args.keep_work),
+                                "native_wipe": "volatile stores",
+                                "release_surface": release_surface},
             "business_native_manifest": business_native_manifest,
             "signer_cert_sha256": cert_sha256.hex().upper(),
             "payload_format": "DXPROT01/HMAC-SHA256/SHA256-CTR", "diversification": profile,
