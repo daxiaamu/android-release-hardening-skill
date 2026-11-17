@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "resources": [
+    {"id": "configuration", "entry": "assets/config/rules.json"},
+    {"id": "model/weights", "entry": "assets/models/weights.dat"},
+    {"id": "page/index", "entry": "assets/pages/index.html"},
+    {"id": "root/template", "entry": "templates/root.txt"}
+  ]
+}

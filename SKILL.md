@@ -53,7 +53,7 @@ Do not silently substitute a demo application for artifact-shell mode. Do not tr
 - Use per-build random binary self-seal markers. Reject descriptive marker strings such as `ENGINEHASH`, which become stable reverse-engineering anchors.
 - Test the exact peeled reconstruction: recovered business DEX, restored original Application/launcher, original resources, patched business SOs, and attacker signing. Reject a release if fresh protected outputs still work after the shell classes, assets, metadata, providers, and SOs are deleted.
 - Sign to a temporary artifact, verify signature and structure, then atomically publish the output so a failed run cannot replace a known-good release.
-- For selected installable scripts, WebUI, or standalone helpers, read `references/sealed-resources.md` before using authenticated resource containers. Keep business authorization before resource reads; preserve project-specific LSP/configuration extensions and require final-APK extraction plus runtime-read checks.
+- For selected application data/resources (configuration, models, templates, WebUI, scripts, or standalone helpers), read `references/sealed-resources.md` before using authenticated resource containers. Keep any project-required authorization before resource reads; do not introduce project-specific accounts, package names, or online requirements into the generic component. Preserve custom LSP/configuration extensions and require final-APK extraction plus runtime-read checks.
 
 ## Bundled DXProtect tool
 

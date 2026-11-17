@@ -1,53 +1,89 @@
-# SealedResources 本地联合验证接口（未发布）
+# 通用认证加密资源
 
-工具源码：D:/myproject/poweramp/skills/android-release-hardening/scripts/dxprotect/
-本接口补充资源保护，不替换 OPLUSBox 的 LSP 分离、binding-config 或 BLA 流程。不要覆盖盒子现有 protect.py；在现有分支按下述挂接点合并。
+适用于单体 APK 中需要由业务代码按逻辑 ID 读取的普通资源：JSON、文本、模型、模板、离线页面、二进制数据和独立程序。组件不依赖目标包名、账号体系或具体文件名；OPLUSBox 只是[项目适配案例](sealed-resources-project-cases.md)。
 
-## 业务接口
-`com.daxiaamu.shellbinding.OuterShare.resource(String id)` 返回 byte[]，失败抛 SecurityException；调用方用完后清零。沿用现有反射桥，不需要 Context 参数。仅主 App 壳完成恢复且完整性有效时可读，LSP 独立进程不应调用。
-该接口验证壳/签名/密文完整性，不代替在线会员授权。盒子必须先完成在线授权，再调用 read、创建明文ZIP或写出helper；状态/卸载/既有离线救援不依赖该接口。
+标准接入只需：配置资源清单、切换选定资源的读取接口、运行原有加固命令。不需要修改 protect.py 或 native 源码。该功能默认关闭。
 
-## 构建配置
-`--sealed-resources-manifest D:/private/shield-resources.json`
-JSON:
+## 输入与配置
+
+通过 `--sealed-resources-manifest resources.json` 或主配置的 `"sealed_resources_manifest": "resources.json"` 启用。清单路径相对于执行命令的工作目录解析；entry 始终是输入 APK ZIP 条目名，不是电脑文件路径或 APKtool 的 unknown/ 路径。
+
 ```json
 {"schema":1,"resources":[
- {"id":"shield/core-apps","entry":"core-apps.sh"},
- {"id":"shield/webui-status","entry":"shield-webui-status.sh"},
- {"id":"shield/webui/index.html","entry":"shield-webui/index.html"},
- {"id":"shield/helper/arm64-v8a","entry":"lib/arm64-v8a/libshieldcore.so"}
+  {"id":"configuration","entry":"assets/config/rules.json"},
+  {"id":"model/weights","entry":"assets/models/weights.dat"},
+  {"id":"page/index","entry":"assets/pages/index.html"},
+  {"id":"root/template","entry":"templates/root.txt"}
 ]}
 ```
-entry 是输入 APK ZIP 条目名，不是外部文件路径；需列举所有 WebUI 文件及四 ABI helper。工具只处理明确选择的普通文件，严格拒绝 Manifest、DEX、路径逃逸、重复id/entry和缺失文件。
 
-## 现有 LSP 工具挂接点
-1. 将 tools/sealed_resources.py 放到现有 tools/；从其导入 seal_resources。
-2. argparse 增加 --sealed-resources-manifest（Path）。
-3. apktool decode 后，在枚举 business_native_manifest **之前**执行：
-   `resource_plan = seal_resources(decoded, manifest, key, asset_dir, seal)`
-   其中 key 是本次壳加密密钥、asset_dir 是随机 assets 子目录；原资源/helper 经认证加密后从 decoded 移除。因此原 helper 不再进入需要在 lib/ 重测的业务 SO 清单。业务 JNI SO 保持原样。注意将本次 key/profile/asset_dir 的生成提前，不能重新生成第二份 key。
-4. 合并 stub/src/com/daxiaamu/protector/StubApplication.java 中 readResourceBytes/readSealedBytes 方法，以及 stub/src/com/daxiaamu/shellbinding/OuterShare.java 的 resource(String)。复用既有 NativeBridge 解密方法和运行时 capability。
-5. R8 显式保留 OuterShare.resource(String)；业务源码通过反射读取，不打包与壳重复的实现。BLA 不得改稳定接口名。
-6. 构建结束在原 report 添加 resource_plan（只包含id、密文条目、大小、哈希，不包含密钥）。
-   发布前调用 `verify_sealed_resources(final_apk, profile["asset_dir"], resource_plan)`，确认索引/密文摘要一致、原路径已移除且没有改名明文副本。盒子专用 audit_shield_payload.py 仍必须独立通过。
-7. 发布前要求联合验证与用户发布授权；不得用通用技能全目录覆盖项目定制壳。盒子定制副本由主开发局部合并，保留LSP/value/runtime.cfg扩展。
+完整示例见 scripts/dxprotect/sealed-resources.example.json。id 与 entry 可完全不同，不要求包名前缀。只选择业务准备切换读取方式的条目；未选择的资源、业务 JNI 库和业务 DEX 不由资源组件修改。
 
-## 存储约定
-随机 asset_dir 下 resources.idx 为认证加密索引，资源为随机 *.res（不是 *.bin，避免误作业务DEX加载）。每个明文包为 DXRSRC01 + uint16be(idUTF8字节长度) + idUTF8 + 内容；运行时解密后比对id，防止资源替换/互换。沿用既有 DXPROT01 认证加密格式，不另加 APK 内可见资源解密密钥。
+- schema 必须为整数 1；只接受 schema/resources 字段，每项只接受 id/entry。
+- 最多 256 项；单项不超过 16 MiB，总计不超过 64 MiB；允许空文件。
+- id 为 1–128 个 ASCII 字符，首字符为字母或数字，后续允许字母、数字、点、下划线、斜杠、横线。
+- entry 是规范相对路径，可含空格和 Unicode 文件名；禁止反斜杠、冒号、路径逃逸、重复源文件、符号链接及结构性条目（Manifest、DEX、资源表、META-INF 等）。
+- 根目录普通资源按 APKtool 的 unknown/ 布局解析；assets/lib 等直接布局也支持。多处同名映射时拒绝，不猜测来源。
+- 不传参数，或清单为 `{"schema":1,"resources":[]}`，均不创建资源索引、不调用资源加密、不删除任何输入文件。
 
-限制：运行时授权ROOT可读取解密结果；此方案解决 APK 静态明文载荷，不保证安装后的脚本/WebUI/helper 无法提取。联合验证结果未确认前不得称正式修复通过。
+## 稳定读取接口
 
-## 2026-11-17 本地证据
-- 原始正式2.6.1 APK：audit_shield_payload.py 检出12项明文暴露。
-- 用原包12项真实载荷作为独立回归输入，完成四ABI/R8壳构建及v1/v2/v3签名验证；新包通过通用资源门禁及盒子专用提取审计。
-- 产物：D:/myproject/poweramp/apk-analysis/oplusbox-2.6.1/local-sealed-fixture/protected.apk；静态证据为同目录plaintext-after.json及*.dxprotect.json。
-- 五项资源行为测试覆盖认证回读、错key/篡改拒绝、输入校验、路径映射、随机化及最终APK改名明文副本/密文修改。
-- 最终全量本地回归21项通过（58.258秒），git diff --check通过；这些不替代盒子最终UI/会员/LSP联合验收。
-- 不将回归包当成真实盒子最终APK验证；实际会员、LSP、UI及授权后安装由主开发对话继续联合验证。未提交、未推送GitHub，未更新已安装技能或盒子定制副本。
+`com.daxiaamu.shellbinding.OuterShare.resource(String id): byte[]`
 
-## 2026-11-17 联合验证通过
-- 主开发候选APK SHA-256：BBC0E6E0B83A82D5B64F1B2B25C34B7B0D5CD23B6457BB2254A9631E0901168C，与plaintext-gate.json记录一致，提取审计通过。
-- 8T d4d771ab：冷启动、信息/功能/设置/用户中心界面通过；真实App进程探针记录 SHIELD_RESOURCE_PROBE_PASS count=12 unknown_rejected=true。
-- 主开发报告原生探针通过LSP、签名、配置/DEX解密、完整性图和SO/DEX/配置篡改拒绝；保留R8、BLA、classes2及binding-config扩展。
-- 证据位于盒子项目 artifacts/shield-audit-work/ 下的plaintext-gate.json、ui/verification.json、resource-probe/result.log及保护报告。通用技能仓库不包含候选APK、密钥、账户或私有构建配置。
-- 仅确认静态载荷保护及上述运行时读取/兼容性检查；未安装ROOT护盾、未重启或重测开机救援，不能推断ROOT运行时不可dump。
+该命名空间是壳的固定 ABI，不是目标 App 的 applicationId；目标项目可以使用任意包名。需在壳完成初始化后的主 App 进程调用，例如 Activity 或业务入口，不在原 Application.attachBaseContext 中调用。
+
+```kotlin
+val facade = Class.forName("com.daxiaamu.shellbinding.OuterShare")
+val read = facade.getMethod("resource", String::class.java)
+val bytes = read.invoke(null, "model/weights") as ByteArray
+try {
+    // 将 bytes 交给业务解析器，不长期缓存明文。
+} finally {
+    bytes.fill(0)
+}
+```
+
+使用反射无需编译期壳依赖，不要把另一个 OuterShare 实现打进业务 APK。壳自身的 R8 保留规则已包含 resource(String)。缺失资源、资源互换、认证失败和未初始化均拒绝；反射调用的 SecurityException 会包装在 InvocationTargetException 中，由项目按自身错误处理流程展示。
+
+这个接口只证明密文及应用完整性，不提供会员、许可证或用户授权。如果项目有这些要求，由业务在读取、创建明文文件或安装载荷之前完成；无此要求的离线 App 不需要引入账号或联网流程。返回缓冲区归调用方所有，用完清理；转成不可变 String 后无法保证立即擦除。
+
+## 支持边界
+
+| 场景 | 行为与要求 |
+|---|---|
+| 普通 Java/Kotlin 单体 APK | 使用标准 CLI、资源清单和稳定读取接口 |
+| 自带真实 JNI/SO | 默认保留库及其导出，继续参与原生完整性清单；不要把 System.loadLibrary 依赖的库选成普通资源 |
+| 独立可执行 helper | 建议先以 assets 普通二进制输入；如显式选中 lib/ 下的独立程序，会在原生清单生成前移走，不能再依赖 nativeLibraryDir |
+| Android res/raw 或编译资源 | 不是透明替换；所有消费者必须改用稳定接口。仍被 Resources、XML 或框架自动读取的条目不应选择 |
+| 定制 LSP/插件壳 | 资源组件可复用；入口 DEX 分离、额外配置、测量图仍由已有适配层负责。不要覆盖定制副本或盲目加密独立启动 DEX |
+| split APK/AAB | 此接口不扩展基础工具的支持范围；先生成受支持的 standalone APK |
+
+这里只变更选定资源的读取方式；普通加固壳原有 Application/Provider/ABI/API 兼容边界仍然有效。资源读取成功不等于业务整体功能已验收。
+
+## 存储与最终包验收
+
+随机 assets 子目录下的 resources.idx 是认证加密索引，资源为随机 *.res（不会被当作业务 DEX 的 *.bin 加载）。每个资源在加密前绑定逻辑 ID：
+`DXRSRC01 + uint16be(id字节长度) + idUTF8 + 原始字节`。
+复用既有 native DXPROT01 格式及每构建密钥，不在业务配置中增加解密密钥；运行时逐次取得独立完整性 ticket。
+
+标准工具在输出最终签名 APK 前自动调用 verify_sealed_resources，检查密文/索引摘要、原始路径删除和改名的同字节明文副本。空文件无秘密内容，故只检查路径删除及认证密文，不因为其他未选择的空文件而误拒绝。
+
+若在已有定制流水线接入模块：
+1. 将 seal_resources(decoded, manifest, key, asset_dir, seal) 放在原生清单枚举前；沿用本次壳的 key，不生成第二套。
+2. 保留 OuterShare.resource 与 StubApplication 的 readResourceBytes/readSealedBytes；不能丢失已有 facade、配置和入口扩展。
+3. 报告写入 resource_plan；最终 APK 调用 verify_sealed_resources(apk, asset_dir_name, resource_plan)。
+4. 在项目自身完成原始条目提取检查、真实进程读取、未知/篡改拒绝及业务回归。示例应用不能代替项目验收。
+
+## 可复现通用性测试
+
+`python -m unittest discover -s scripts/dxprotect/tests -v`
+
+`tests/run_resource_matrix.py` 是显式集成测试：自建测试证书与三个无关包名的 APK，不读取任何项目源码或发布密钥。分别覆盖纯 Java、自定义 Application + 原 JNI、资源保护关闭；启用场景验证文本/JSON/模型/HTML/空文件/Unicode路径/根资源，未知资源必须拒绝。纯Java场景使用CLI开关，JNI场景使用JSON主配置，分别验证两种入口。运行参数 --android-sdk、--ndk、--java-home、--apktool、--out；JDK需能运行所选build-tools的R8/D8。可选 --serial 指定获准设备，--package-suffix 用于独立重跑。默认只本地构建，带 serial 才安装独立测试 App；拒绝覆盖已存在包，不卸载其他应用。
+
+本地与设备结果写入测试输出目录，不进入技能仓库。一般性验收标准是：切换目标包名、资源 ID 与目录，只改清单和业务读取代码，工具源码不变。
+
+2026-11-17：25项本地回归通过。8T（API37、arm64）上的纯Java、原JNI和关闭资源保护三个场景均构建/启动通过；启用场景中六类资源SHA-256匹配且未知ID被拒绝，关闭场景原始资源保持字节一致。证据在工作区 apk-analysis/generic-resource-matrix/ 的各轮 results.json、build.log 和 ui.xml。此记录不代表旧Android/API或所有项目结构均已覆盖。
+
+## 安全边界
+
+本功能解决 APK 的静态明文资源暴露，不保证 ROOT 所有者无法从运行进程或已安装文件提取内容。没有通用会员判断、没有静默执行 helper、没有自动安装模块或更改设备启动行为。基础签名验证、进程完整性和项目授权必须独立验收。
