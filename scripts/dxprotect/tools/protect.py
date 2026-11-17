@@ -6,6 +6,7 @@ from typing import Optional
 import xml.etree.ElementTree as ET
 import copy
 from release_surface import audit_apk
+from sealed_resources import seal_resources, verify_sealed_resources
 
 ANDROID = "http://schemas.android.com/apk/res/android"
 ET.register_namespace("android", ANDROID)
@@ -422,7 +423,7 @@ def compile_stub(work: Path, key: bytes, cert_sha256: bytes, profile: dict, abis
         rules.write_text("\n".join(
             "-keep,allowoptimization class " + profile["java_package"] + "." + name + " { *; }"
             for name in keep_classes) +
-            "\n-keep class com.daxiaamu.shellbinding.OuterShare { public static byte[] share(java.lang.String,int,int); }\n"
+            "\n-keep class com.daxiaamu.shellbinding.OuterShare { public static byte[] share(java.lang.String,int,int); public static byte[] resource(java.lang.String); }\n"
             "-renamesourcefileattribute Source\n", encoding="utf-8")
         runtime_java = executable("java", D8_JAVA_HOME) or JAVA
         run([runtime_java, "-cp", BT / "lib/d8.jar", "com.android.tools.r8.R8",
@@ -480,6 +481,7 @@ def main():
     ap.add_argument("--min-api", type=int, default=23)
     ap.add_argument("--runtime-guard", choices=("off", "tracer", "strict"), default="strict")
     ap.add_argument("--shell-optimizer", choices=("r8", "d8"), default="r8")
+    ap.add_argument("--sealed-resources-manifest", type=Path)
     ap.add_argument("--shell-mapping-output", type=Path, help="Private external mapping path; never package or commit it")
     ap.add_argument("--keep-work", action="store_true")
     ap.set_defaults(**defaults)
@@ -525,13 +527,6 @@ def main():
         else:
             abis = [x.strip() for x in args.abis.split(",") if x.strip()]
             if not abis or set(abis) - supported: raise RuntimeError("invalid --abis value")
-        business_native_manifest = []
-        for native_file in sorted((decoded / "lib").glob("*/*.so")) if (decoded / "lib").exists() else []:
-            if native_file.parent.name not in abis: continue
-            business_native_manifest.append({
-                "entry": native_file.relative_to(decoded).as_posix(),
-                "sha256": hashlib.sha256(native_file.read_bytes()).hexdigest().upper()
-            })
         build_id = "DXP7-" + secrets.token_hex(4).upper(); key = secrets.token_bytes(32)
         token = secrets.token_hex(6)
         java_package = "x" + secrets.token_hex(4) + ".y" + secrets.token_hex(4)
@@ -560,6 +555,14 @@ def main():
         original, original_launcher, original_min_sdk, effective_min_sdk = patch_manifest(
             decoded / "AndroidManifest.xml", build_id, profile, args.min_api)
         asset_dir = decoded / "assets" / profile["asset_dir"]; asset_dir.mkdir(parents=True, exist_ok=True)
+        resource_plan = seal_resources(decoded, args.sealed_resources_manifest, key, asset_dir, seal)
+        business_native_manifest = []
+        for native_file in sorted((decoded / "lib").glob("*/*.so")) if (decoded / "lib").exists() else []:
+            if native_file.parent.name not in abis: continue
+            business_native_manifest.append({
+                "entry": native_file.relative_to(decoded).as_posix(),
+                "sha256": hashlib.sha256(native_file.read_bytes()).hexdigest().upper()
+            })
         for index, dex_file in enumerate(dex_files, 1):
             target = asset_dir / f"payload{index:02d}.bin"
             target.write_bytes(seal(dex_file.read_bytes(), key)); dex_file.unlink()
@@ -580,6 +583,7 @@ def main():
         output_structure = verify_output_structure(
             signed, profile, abis, len(dex_files), stub_dex_sha256, business_native_manifest)
         release_surface = audit_apk(signed, profile, NDK_BIN, work)
+        verify_sealed_resources(signed, profile["asset_dir"], resource_plan)
         if args.shell_mapping_output:
             if args.shell_optimizer != "r8": raise RuntimeError("mapping export requires R8")
             forbidden_mapping_targets = (args.input, args.output, args.keystore,
@@ -602,6 +606,7 @@ def main():
             "compatibility_preflight": compatibility,
             "launcher_handoff": "resolved launcher theme/task attributes + exact launcher filter + Intent payload/grant clone with launcher root-task flag translation + API31 retained splash until original Activity covers gateway",
             "output_structure": output_structure,
+            "sealed_resources": resource_plan,
             "code_protection": {"shell_optimizer": args.shell_optimizer,
                                 "business_dex_transformed": False,
                                 "mapping_retained": args.shell_optimizer == "r8" and bool(args.shell_mapping_output or args.keep_work),

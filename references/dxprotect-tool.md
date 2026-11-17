@@ -28,6 +28,8 @@ DXProtect 的输入是已经构建完成的单体 APK，输出是重新签名的
 
 ## 使用
 
+选定脚本/WebUI/standalone helper 等资源可通过 `--sealed-resources-manifest` 加入认证加密容器，并通过 `OuterShare.resource(String)` 返回字节；接口、与项目定制 LSP 壳的局部集成及本地联合验证规则见 [资源载荷保护](sealed-resources.md)。不得将该完整性接口当作在线会员鉴权，业务须先授权再读取；不要自动加密 LSP 独立启动所需 DEX。
+
 复制 `dxprotect.config.example.json` 到源码仓库之外，填写目标 APK、输出、正式签名和工具链路径。签名密码只通过环境变量传入：
 
 ```powershell

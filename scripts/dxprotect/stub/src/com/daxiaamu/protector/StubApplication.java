@@ -359,6 +359,58 @@ public final class StubApplication extends Application {
 
     static void revokeIntegrity() { integrityReady = false; }
 
+    public static byte[] readResourceBytes(String id) {
+        StubApplication app = instance;
+        if (app == null) throw new SecurityException("sealed resources not initialized");
+        return readResourceBytes(app, id);
+    }
+
+    private static synchronized byte[] readResourceBytes(Context context, String id) {
+        StubApplication app = instance;
+        if (!integrityReady || app == null || context == null || id == null ||
+                !id.matches("[A-Za-z0-9][A-Za-z0-9._/-]{0,127}") ||
+                !app.apkPath.equals(context.getApplicationInfo().sourceDir))
+            throw new SecurityException("sealed resource unavailable");
+        byte[] index = null, envelope = null, ticket = null;
+        try {
+            ticket = AnchorBridge.__DXP_ATTEST_METHOD__(app.signerSha256, app.enginePath, app.anchorPath);
+            if (ticket == null || ticket.length != 48) throw new SecurityException("resource integrity failed");
+            index = app.readSealedBytes(context, "resources.idx", ticket);
+            if (index.length > 131072) throw new SecurityException("resource index too large");
+            org.json.JSONObject root = new org.json.JSONObject(new String(index, "UTF-8"));
+            if (root.getInt("schema") != 1) throw new SecurityException("resource schema mismatch");
+            String filename = root.getJSONObject("resources").getString(id);
+            if (!filename.matches("r[0-9a-f]{24}\\.res")) throw new SecurityException("resource path rejected");
+            envelope = app.readSealedBytes(context, filename, ticket);
+            byte[] name = id.getBytes("UTF-8");
+            if (envelope.length < 10 + name.length || envelope.length > 16777400 ||
+                    envelope[0]!='D' || envelope[1]!='X' || envelope[2]!='R' || envelope[3]!='S' ||
+                    envelope[4]!='R' || envelope[5]!='C' || envelope[6]!='0' || envelope[7]!='1' ||
+                    (((envelope[8]&255)<<8) | (envelope[9]&255)) != name.length)
+                throw new SecurityException("resource envelope rejected");
+            for (int i=0;i<name.length;i++) if (name[i] != envelope[10+i])
+                throw new SecurityException("resource identity mismatch");
+            return Arrays.copyOfRange(envelope, 10 + name.length, envelope.length);
+        } catch (Exception failure) {
+            throw new SecurityException("sealed resource read failed", failure);
+        } finally {
+            if (index != null) Arrays.fill(index, (byte)0);
+            if (envelope != null) Arrays.fill(envelope, (byte)0);
+            if (ticket != null) Arrays.fill(ticket, (byte)0);
+        }
+    }
+
+    private byte[] readSealedBytes(Context context, String filename, byte[] ticket) throws Exception {
+        byte[] sealed = readAll(context, BuildProfile.ASSET_DIR + "/" + filename);
+        try {
+            if (sealed.length > 16777460) throw new SecurityException("sealed resource too large");
+            byte[] clear = NativeBridge.__DXP_DECRYPT_METHOD__(sealed, signerSha256, apkPath,
+                    enginePath, anchorPath, ticket);
+            if (clear == null) throw new SecurityException("resource authentication failed");
+            return clear;
+        } finally { Arrays.fill(sealed, (byte)0); }
+    }
+
     static String originalLauncher(Context context) throws Exception {
         ApplicationInfo info = context.getPackageManager().getApplicationInfo(context.getPackageName(), PackageManager.GET_META_DATA);
         String value = info.metaData == null ? null : info.metaData.getString(BuildProfile.META_LAUNCHER);
