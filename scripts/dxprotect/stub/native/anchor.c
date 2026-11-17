@@ -8,8 +8,8 @@
 #include "generated_key.h"
 #include "generated_anchor_secret.h"
 
-__attribute__((used,section(".dxaseal"))) static const uint8_t DXA_SELF_SEAL[48]={DXP_ANCHOR_SELF_MARKER_BYTES};
-__attribute__((used,section(".dxapeer"))) static const uint8_t DXA_PEER_SEAL[48]={DXP_ANCHOR_PEER_MARKER_BYTES};
+__attribute__((used,section(".rodata"))) static const uint8_t DXA_SELF_SEAL[48]={DXP_ANCHOR_SELF_MARKER_BYTES};
+__attribute__((used,section(".rodata"))) static const uint8_t DXA_PEER_SEAL[48]={DXP_ANCHOR_PEER_MARKER_BYTES};
 static const uint8_t DXE_SELF_MARKER[16]={DXP_ENGINE_SELF_MARKER_BYTES};
 static const uint8_t DXE_PEER_MARKER[16]={DXP_ENGINE_PEER_MARKER_BYTES};
 static void secure_zero(void *p,size_t n){volatile uint8_t *v=(volatile uint8_t*)p;while(n--)*v++=0;}

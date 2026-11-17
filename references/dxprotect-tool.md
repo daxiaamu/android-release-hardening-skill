@@ -24,6 +24,7 @@ DXProtect 的输入是已经构建完成的单体 APK，输出是重新签名的
 - 启动、Activity resume 和每构建随机 watchdog 周期都会刷新 capability；失败进入不可取消、禁止 Back/外部点击且只有“退出”按钮的失败界面。
 - 输出先在临时位置签名并完成结构/签名验收，再原子替换目标文件，失败不会留下半成品覆盖原输出。
 - native 自封印定位标记必须按构建随机生成且不可自描述；不得保留 `ENGINEHASH`/`ANCHORHASH` 一类稳定字符串。
+- seal 槽位放在普通只读 .rodata，最终壳ELF门禁拒绝固定的旧seal/peer段名。签名伪造与索引认证审计按[隔离负测试](signer-resource-negative-tests.md)核查，避免把公开证书、DER比较或静态字符串误作突破证据。
 - 在旧 Android build-tools 的 D8 对合法 Java 8 启动类图发生内部崩溃时，工具会回退到同目录 `dx` 只编译小型启动 DEX；该回退不改变 native 加密、测量和份额图。
 
 ## 使用

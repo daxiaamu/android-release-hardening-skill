@@ -41,7 +41,8 @@ def inspect_elf(path, readelf):
         if len(fields) >= 8 and fields[0].rstrip(":").isdigit():
             if fields[4] in ("GLOBAL", "WEAK") and fields[5] in ("DEFAULT", "PROTECTED") and fields[6] != "UND":
                 exports.append(fields[7].split("@")[0])
-    return {"exports": sorted(set(exports)), "debug_sections": debug}
+    seal_sections = sorted(sections.intersection({".dxpseal", ".dxppeer", ".dxaseal", ".dxapeer"}))
+    return {"exports": sorted(set(exports)), "debug_sections": debug, "legacy_seal_sections": seal_sections}
 
 def audit_apk(apk, profile, ndk_bin, work):
     readelf = Path(ndk_bin) / ("llvm-readelf.exe" if os.name == "nt" else "llvm-readelf")
@@ -81,6 +82,8 @@ def audit_apk(apk, profile, ndk_bin, work):
                         findings.append({"entry": name, "reason": "unexpected shell exports"})
                     if result["debug_sections"]:
                         findings.append({"entry": name, "reason": "shell debug/symbol sections"})
+                    if result["legacy_seal_sections"]:
+                        findings.append({"entry": name, "reason": "descriptive shell seal sections"})
                     if any(marker in found for marker in lookup_markers):
                         findings.append({"entry": name, "reason": "plaintext shell lookup/anchor"})
                 elif result["debug_sections"]:

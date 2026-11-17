@@ -65,7 +65,10 @@ public final class MainActivity extends Activity {
                 if(!rejected)throw new SecurityException("missing resource accepted");
             }
             view.setText("RESOURCE_MATRIX_PASS __PACKAGE__");
-        } catch(Throwable error){view.setText("RESOURCE_MATRIX_FAIL "+error.getClass().getName());}
+        } catch(Throwable error){
+            Throwable cause=error instanceof InvocationTargetException?((InvocationTargetException)error).getCause():error;
+            view.setText("RESOURCE_MATRIX_FAIL "+cause.getClass().getName());
+        }
         setContentView(view);
     }
 }

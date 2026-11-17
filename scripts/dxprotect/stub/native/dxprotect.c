@@ -8,8 +8,8 @@
 #include <zlib.h>
 #include "generated_key.h"
 
-__attribute__((used,section(".dxpseal"))) static const uint8_t DXP_SELF_SEAL[48]={DXP_ENGINE_SELF_MARKER_BYTES};
-__attribute__((used,section(".dxppeer"))) static const uint8_t DXP_PEER_SEAL[48]={DXP_ENGINE_PEER_MARKER_BYTES};
+__attribute__((used,section(".rodata"))) static const uint8_t DXP_SELF_SEAL[48]={DXP_ENGINE_SELF_MARKER_BYTES};
+__attribute__((used,section(".rodata"))) static const uint8_t DXP_PEER_SEAL[48]={DXP_ENGINE_PEER_MARKER_BYTES};
 static const uint8_t DXA_SELF_MARKER[16]={DXP_ANCHOR_SELF_MARKER_BYTES};
 static const uint8_t DXA_PEER_MARKER[16]={DXP_ANCHOR_PEER_MARKER_BYTES};
 static void secure_zero(void *p,size_t n){volatile uint8_t *v=(volatile uint8_t*)p;while(n--)*v++=0;}

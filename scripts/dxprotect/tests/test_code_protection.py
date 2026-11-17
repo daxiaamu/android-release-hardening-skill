@@ -67,6 +67,21 @@ class CodeProtectionTest(unittest.TestCase):
                     with self.assertRaises(RuntimeError):
                         self.audit({"lib/arm64-v8a/libengine.so": so.read_bytes()})
 
+    def test_legacy_seal_section_is_rejected_without_export_or_debug_leaks(self):
+        clang = NDK / "aarch64-linux-android23-clang.cmd"
+        if not clang.exists():
+            self.skipTest("NDK required")
+        with tempfile.TemporaryDirectory() as directory:
+            c = Path(directory) / "probe.c"; so = Path(directory) / "probe.so"
+            c.write_text('static const char slot[] __attribute__((used,section(".dxpseal")))="slot"; int JNI_OnLoad(void){return 1;}',encoding="ascii")
+            subprocess.run([str(clang),"-shared","-fPIC","-Wl,--strip-all",str(c),"-o",str(so)],check=True,capture_output=True)
+            elf = surface.inspect_elf(so,NDK/"llvm-readelf.exe")
+            self.assertEqual(["JNI_OnLoad"],elf["exports"])
+            self.assertEqual([],elf["debug_sections"])
+            self.assertEqual([".dxpseal"],elf["legacy_seal_sections"])
+            with self.assertRaisesRegex(RuntimeError,"descriptive shell seal sections"):
+                self.audit({"lib/arm64-v8a/libengine.so":so.read_bytes()})
+
     def test_optimized_native_wipe_behavior(self):
         compiler = os.environ.get("DXP_HOST_CC") or shutil.which("gcc")
         if not compiler:
